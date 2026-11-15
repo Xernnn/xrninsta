@@ -1,6 +1,8 @@
 // xrninsta's page: the sheet's Dashboard, its Songs and its OnHold, on the home server.
 // Everything a person typed goes in through textContent: the host is shared with other apps' pages.
 
+import { dashboard, songList } from './model.js';
+
 const $ = (sel) => document.querySelector(sel);
 const CLIENT = { 'X-Xrn-Client': 'xrninsta' };
 const BOT_WORDS = {
@@ -10,6 +12,8 @@ const BOT_WORDS = {
   refused: 'Telegram refused the bot',
   error: 'The bot ran into a problem',
 };
+// A mouse and keyboard: put the cursor in a row that opens. On a phone that would pop the keyboard.
+const POINTER = matchMedia('(hover: hover) and (pointer: fine)');
 
 let data = null; // {genres, colors, nextDay, songs, holds}
 let open = null; // the record being edited: "song:<id>", "hold:<id>" or "promote:<id>"
@@ -45,22 +49,56 @@ function el(tag, props = {}, ...children) {
   return node;
 }
 
-const fold = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/đ/g, 'd');
-const splitArtists = (t) => String(t || '').split(',').map((s) => s.trim()).filter(Boolean);
-const byName = (a, b) => a.localeCompare(b);
-
-function genreChip(genre) {
-  const chip = el('span', { class: 'chip', text: genre || '?' });
+// Fills a cell with its genre's colour from the sheet, or marks a genre the bot doesn't know.
+function tint(node, genre) {
   const color = data.colors[genre];
-  if (color) chip.style.setProperty('--genre', color);
-  else chip.classList.add('odd');
-  return chip;
+  node.classList.add('g');
+  if (color) node.style.setProperty('--genre', color);
+  else node.classList.add('odd');
+  return node;
 }
 
 function genreSelect(select, { all = false, value } = {}) {
-  select.replaceChildren(...(all ? ['ALL'] : []).concat(data.genres).map((g) => el('option', { value: g, text: g === 'ALL' ? 'All genres' : g })));
+  select.replaceChildren(...(all ? ['ALL'] : []).concat(data.genres).map((g) => el('option', { value: g, text: g })));
   if (value && [...select.options].some((o) => o.value === value)) select.value = value;
 }
+
+// A field in a row being typed into. Its label shows only on a phone, where the columns above it
+// don't line up with it; `size` is how much of a phone's width it takes ("half" or "third").
+const field = (label, input, size) => el('label', { class: size }, el('span', { class: 'f-label', text: label }), input);
+const emptyRow = (span, text) => el('tr', { class: 'empty' }, el('td', { colspan: span, class: 'muted', text }));
+
+// A row in a table opens for fixing on a click anywhere in it except its own buttons.
+function opens(key) {
+  return (e) => {
+    if (e.target.closest('button, a, input, select, textarea')) return;
+    edit(key);
+  };
+}
+
+// Opens one row for fixing, and so closes any other, in either table.
+function edit(key) {
+  open = key;
+  renderSongs();
+  renderHolds();
+  const row = document.querySelector('tr.editing');
+  if (!row) return;
+  row.scrollIntoView({ block: 'nearest' });
+  if (POINTER.matches) row.querySelector('input:not([type=hidden]), select, textarea')?.focus({ preventScroll: true });
+}
+
+function closeEditor() {
+  open = null;
+  renderSongs();
+  renderHolds();
+}
+
+// Escape puts a row being fixed back as it was, wherever the focus is.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !open || e.defaultPrevented) return;
+  e.preventDefault();
+  closeEditor();
+});
 
 // ---- signing in --------------------------------------------------------------------------------
 
@@ -108,7 +146,9 @@ async function load() {
     genreSelect($('#song-genre'), { all: true });
     genreSelect($('#add-song [name=genre]'));
   }
-  $('#add-song [name=day]').placeholder = `Day (next: ${data.nextDay})`;
+  const day = $('#add-song [name=day]');
+  day.placeholder = String(data.nextDay);
+  day.title = `Leave it empty for the next day, ${data.nextDay}`;
   const valid = data.songs.filter((s) => data.genres.includes(s.genre)).length;
   $('#counts').textContent = `${valid} songs · ${data.holds.length} on hold`;
   render();
@@ -128,98 +168,112 @@ function render() {
   renderHolds();
 }
 
-// ---- by artist (the sheet's Dashboard) -----------------------------------------------------------
+// ---- the Dashboard --------------------------------------------------------------------------------
 
 function renderArtists() {
   const genre = $('#artist-genre').value || 'ALL';
-  const oldest = $('#artist-sort').value === 'old';
-  const rows = data.songs
-    .filter((s) => s.title.trim() && s.artists.trim() && Number.isFinite(s.day) && s.day >= -5 && data.genres.includes(s.genre))
-    .filter((s) => genre === 'ALL' || s.genre === genre);
-  const byArtist = new Map();
-  const genreCount = new Map();
-  for (const s of rows) {
-    genreCount.set(s.genre, (genreCount.get(s.genre) || 0) + 1);
-    for (const a of splitArtists(s.artists)) {
-      if (!byArtist.has(a)) byArtist.set(a, []);
-      byArtist.get(a).push(s);
-    }
+  const board = dashboard(data, { genre, oldest: $('#artist-sort').value === 'old' });
+
+  // Each artist is a row group, as in the sheet: their name and count, then their songs, each title
+  // filled with its genre's colour. A song opens in Songs to be fixed.
+  const table = $('#artists');
+  for (const body of [...table.tBodies]) body.remove();
+  if (!board.artists.length) table.append(el('tbody', {}, emptyRow(3, 'No songs here.')));
+  for (const artist of board.artists) {
+    table.append(el('tbody', { class: 'group' },
+      el('tr', { class: 'artist' }, el('th', { colspan: 3, scope: 'rowgroup', text: `${artist.name} (${artist.songs.length})` })),
+      artist.songs.map((s) => el('tr', { class: 'rec', title: 'Open in Songs to fix it', onclick: () => openSong(s.id) },
+        el('td', { class: 'indent' }),
+        tint(el('td', { text: s.title }), s.genre),
+        el('td', { class: 'day', text: `Day ${s.day}` }))),
+      el('tr', { class: 'gap', 'aria-hidden': 'true' }, el('td', { colspan: 3 }))));
   }
-  const names = [...byArtist.keys()].sort((a, b) => byArtist.get(b).length - byArtist.get(a).length || byName(a, b));
 
-  $('#artists').replaceChildren(...(names.length ? names.map((name) => {
-    const songs = byArtist.get(name).slice().sort((a, b) => (oldest ? a.day - b.day : b.day - a.day));
-    return el('div', { class: 'group' },
-      el('h3', {}, name, el('span', { class: 'muted', text: ` (${songs.length})` })),
-      el('ul', {}, songs.map((s) => {
-        const li = el('li', { class: 'tinted' }, el('span', { text: s.title }), el('span', { class: 'day', text: `Day ${s.day}` }));
-        li.style.setProperty('--genre', data.colors[s.genre]);
-        return li;
-      })));
-  }) : [el('p', { class: 'muted', text: 'No songs here.' })]));
-
-  const top = names.slice(0, 12);
-  const genres = [...genreCount.entries()].sort((a, b) => b[1] - a[1] || byName(a[0], b[0]));
   $('#summary').replaceChildren(
-    el('div', { class: 'card' },
-      el('h3', { text: 'Summary' }),
-      table([['Songs shown', rows.length], ['Artists shown', names.length], ['Genre', genre === 'ALL' ? 'All' : genre]])),
-    el('div', { class: 'card' }, el('h3', { text: 'Top artists' }), table(top.map((n) => [n, byArtist.get(n).length]))),
-    el('div', { class: 'card' }, el('h3', { text: 'By genre' }), table(genres.map(([g, n]) => [genreChip(g), n]))));
+    mini(['Summary'], [['Songs shown', board.songs], ['Artists shown', board.artists.length], ['Genre', genre]], 'kv'),
+    mini(['Artist', 'Total Songs'], board.top),
+    mini(['Genre', 'Song Count'], board.genres, 'legend'));
 }
 
-function table(rows) {
-  return el('table', {}, el('tbody', {}, rows.map(([k, v]) => el('tr', {}, el('th', {}, k), el('td', { text: String(v) })))));
+function mini(head, rows, kind = '') {
+  return el('table', { class: `mini ${kind}` },
+    el('thead', {}, el('tr', {}, head.length === 1
+      ? el('th', { colspan: 2, scope: 'col', text: head[0] })
+      : head.map((h) => el('th', { scope: 'col', text: h })))),
+    el('tbody', {}, rows.map(([k, v]) => {
+      const name = el('th', { scope: 'row', text: k });
+      return el('tr', {}, kind === 'legend' ? tint(name, k) : name, el('td', { text: String(v) }));
+    })));
+}
+
+function openSong(id) {
+  const shown = songList(data, songFilters()).some((s) => s.id === id);
+  if (!shown) {
+    $('#song-filter').value = '';
+    $('#song-genre').value = 'ALL';
+  }
+  showTab('songs');
+  edit(`song:${id}`);
+  document.querySelector('#songs tr.editing')?.scrollIntoView({ block: 'center' });
 }
 
 $('#artist-genre').addEventListener('change', renderArtists);
 $('#artist-sort').addEventListener('change', renderArtists);
 
-// ---- songs (the sheet's Songs tab) ------------------------------------------------------------------
+// ---- Songs ----------------------------------------------------------------------------------------
+
+function songFilters() {
+  return { words: $('#song-filter').value, genre: $('#song-genre').value || 'ALL', oldest: $('#song-sort').value === 'old' };
+}
 
 function renderSongs() {
-  const words = fold($('#song-filter').value.trim());
-  const genre = $('#song-genre').value || 'ALL';
-  const rows = data.songs
-    .filter((s) => genre === 'ALL' || s.genre === genre)
-    .filter((s) => !words || fold(s.title).includes(words) || fold(s.artists).includes(words))
-    .sort((a, b) => b.day - a.day || b.id - a.id);
-  $('#song-count').textContent = rows.length === data.songs.length ? `${rows.length} songs, newest first` : `${rows.length} of ${data.songs.length} songs`;
-  $('#songs').replaceChildren(...rows.map((s) => (open === `song:${s.id}` ? songForm(s) : songRow(s))));
+  const rows = songList(data, songFilters());
+  $('#song-count').textContent = rows.length === data.songs.length ? `${rows.length} songs` : `${rows.length} of ${data.songs.length} songs`;
+  $('#songs').replaceChildren(...(rows.length
+    ? rows.map((s) => (open === `song:${s.id}` ? songForm(s) : songRow(s)))
+    : [emptyRow(5, 'No song matches.')]));
 }
 
 function songRow(s) {
-  return el('button', { class: 'row', onclick: () => { open = `song:${s.id}`; renderSongs(); } },
-    el('span', { class: 'day', text: `Day ${s.day}` }),
-    el('span', { class: 'what' }, el('strong', { text: s.title }), el('span', { class: 'muted', text: s.artists })),
-    genreChip(s.genre));
+  const key = `song:${s.id}`;
+  return el('tr', { class: 'rec', onclick: opens(key) },
+    el('td', { text: s.title }),
+    el('td', { text: s.artists }),
+    el('td', { class: 'num', text: String(s.day) }),
+    tint(el('td', { class: 'genre', text: s.genre || '?' }), s.genre),
+    el('td', { class: 'act' }, el('button', { type: 'button', class: 'link', text: 'Fix', 'aria-label': `Fix "${s.title}"`, onclick: () => edit(key) })));
 }
 
 function songForm(s) {
-  const genre = el('select', { name: 'genre' });
+  const genre = el('select', { name: 'genre', required: true });
   genreSelect(genre, { value: s.genre });
-  const form = el('form', { class: 'card edit' },
-    el('label', {}, 'Title', el('input', { name: 'title', value: s.title, required: true, maxlength: 200 })),
-    el('label', {}, 'Artist(s)', el('input', { name: 'artists', value: s.artists, required: true, maxlength: 300 })),
-    el('div', { class: 'pair' },
-      el('label', {}, 'Day', el('input', { name: 'day', type: 'number', step: 1, value: s.day, required: true })),
-      el('label', {}, 'Genre', genre)),
-    data.genres.includes(s.genre) ? null : el('p', { class: 'error', text: `"${s.genre}" isn't a genre the bot knows; pick one to save.` }),
+  if (!data.genres.includes(s.genre)) genre.value = '';
+  const form = el('form', { class: 'rowform', 'aria-label': `Fix "${s.title}"` },
+    field('Title', el('input', { name: 'title', value: s.title, required: true, maxlength: 200 })),
+    field('Artist(s)', el('input', { name: 'artists', value: s.artists, required: true, maxlength: 300 })),
+    field('Day No', el('input', { name: 'day', type: 'number', step: 1, value: s.day, required: true, inputmode: 'numeric' }), 'half'),
+    field('Genre', genre, 'half'),
     el('div', { class: 'actions' },
-      el('button', { class: 'primary', text: 'Save' }),
-      el('button', { type: 'button', class: 'quiet', text: 'Cancel', onclick: () => { open = null; renderSongs(); } }),
+      el('button', { class: 'primary small', text: 'Save' }),
+      el('button', { type: 'button', class: 'quiet small', text: 'Cancel', onclick: () => closeEditor() }),
+      data.genres.includes(s.genre) ? null : el('span', { class: 'error', text: `"${s.genre}" isn't a genre the bot knows; pick one to save.` }),
       el('span', { class: 'spacer' }),
-      el('button', { type: 'button', class: 'danger', text: 'Delete', onclick: () => remove('songs', s, `Delete "${s.title}"?`) })));
+      el('button', { type: 'button', class: 'danger small', text: 'Delete', onclick: () => remove('songs', s, `Delete "${s.title}"?`) })));
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const f = e.currentTarget;
     change('songs', s, { title: f.title.value, artists: f.artists.value, day: Number(f.day.value), genre: f.genre.value });
   });
-  return form;
+  return el('tr', { class: 'editing' }, el('td', { colspan: 5 }, form));
 }
 
 $('#song-filter').addEventListener('input', renderSongs);
 $('#song-genre').addEventListener('change', renderSongs);
+$('#song-sort').addEventListener('change', () => {
+  try { localStorage.setItem('xrninsta.songSort', $('#song-sort').value); } catch { /* private window */ }
+  renderSongs();
+});
+try { const sort = localStorage.getItem('xrninsta.songSort'); if (sort === 'old' || sort === 'new') $('#song-sort').value = sort; } catch { /* private window */ }
 
 $('#add-song').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -232,52 +286,61 @@ $('#add-song').addEventListener('submit', async (e) => {
   }
 });
 
-// ---- on hold --------------------------------------------------------------------------------------
+// ---- OnHold ---------------------------------------------------------------------------------------
 
 function renderHolds() {
-  $('#holds').replaceChildren(...(data.holds.length ? data.holds.map((h) => {
+  const n = data.holds.length;
+  $('#hold-count').textContent = n === 1 ? '1 song on hold' : `${n} songs on hold`;
+  $('#holds').replaceChildren(...(n ? data.holds.map((h) => {
     if (open === `hold:${h.id}`) return holdForm(h);
     if (open === `promote:${h.id}`) return promoteForm(h);
-    return el('div', { class: 'card hold' },
-      el('strong', { text: h.title }),
-      h.artists ? el('span', { class: 'muted', text: h.artists }) : null,
-      h.note ? el('p', { class: 'note', text: h.note }) : null,
-      el('div', { class: 'actions' },
-        el('button', { class: 'primary', text: 'Add as a song', onclick: () => { open = `promote:${h.id}`; renderHolds(); } }),
-        el('button', { class: 'quiet', text: 'Edit', onclick: () => { open = `hold:${h.id}`; renderHolds(); } }),
-        el('span', { class: 'spacer' }),
-        el('button', { class: 'danger', text: 'Delete', onclick: () => remove('holds', h, `Take "${h.title}" off hold?`) })));
-  }) : [el('p', { class: 'muted', text: 'Nothing on hold.' })]));
+    return holdRow(h);
+  }) : [emptyRow(4, 'Nothing on hold.')]));
+}
+
+function holdRow(h) {
+  const key = `hold:${h.id}`;
+  return el('tr', { class: 'rec', onclick: opens(key) },
+    // On a phone the Note column folds away and the note sits under the title.
+    el('td', {}, h.title, h.note ? el('span', { class: 'note-under', text: h.note }) : null),
+    el('td', { text: h.artists }),
+    el('td', { class: 'note', text: h.note }),
+    el('td', { class: 'act' },
+      el('button', { type: 'button', class: 'primary small', 'aria-label': `Add "${h.title}" as a song`, onclick: () => edit(`promote:${h.id}`) },
+        el('span', { class: 'long', text: 'Add as a song' }), el('span', { class: 'short', text: 'Add' })),
+      el('button', { type: 'button', class: 'quiet small fix', text: 'Fix', 'aria-label': `Fix "${h.title}"`, onclick: () => edit(key) }),
+      el('button', { type: 'button', class: 'danger small', text: 'Delete', 'aria-label': `Delete "${h.title}"`, onclick: () => remove('holds', h, `Take "${h.title}" off hold?`) })));
 }
 
 function holdForm(h) {
-  const form = el('form', { class: 'card edit' },
-    el('label', {}, 'Title', el('input', { name: 'title', value: h.title, required: true, maxlength: 200 })),
-    el('label', {}, 'Artist(s)', el('input', { name: 'artists', value: h.artists, maxlength: 300 })),
-    el('label', {}, 'Note', el('textarea', { name: 'note', maxlength: 1000, rows: 3, text: h.note })),
-    el('div', { class: 'actions' },
-      el('button', { class: 'primary', text: 'Save' }),
-      el('button', { type: 'button', class: 'quiet', text: 'Cancel', onclick: () => { open = null; renderHolds(); } })));
+  const form = el('form', { class: 'rowform', 'aria-label': `Fix "${h.title}"` },
+    field('Title', el('input', { name: 'title', value: h.title, required: true, maxlength: 200 })),
+    field('Artist(s)', el('input', { name: 'artists', value: h.artists, maxlength: 300 })),
+    // A textarea, so a note's line breaks come back as they went in.
+    field('Note', el('textarea', { name: 'note', maxlength: 1000, rows: 1, text: h.note })),
+    el('span', { class: 'go' },
+      el('button', { class: 'primary small', text: 'Save' }),
+      el('button', { type: 'button', class: 'quiet small', text: 'Cancel', onclick: () => closeEditor() })));
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const f = e.currentTarget;
     change('holds', h, { title: f.title.value, artists: f.artists.value, note: f.note.value });
   });
-  return form;
+  return el('tr', { class: 'editing' }, el('td', { colspan: 4 }, form));
 }
 
 function promoteForm(h) {
-  const genre = el('select', { name: 'genre' });
+  const genre = el('select', { name: 'genre', required: true });
   genreSelect(genre);
-  const form = el('form', { class: 'card edit' },
-    el('strong', { text: h.title }),
-    el('label', {}, 'Artist(s)', el('input', { name: 'artists', value: h.artists, required: true, maxlength: 300 })),
-    el('div', { class: 'pair' },
-      el('label', {}, 'Genre', genre),
-      el('label', {}, 'Day', el('input', { name: 'day', type: 'number', step: 1, placeholder: `next: ${data.nextDay}` }))),
-    el('div', { class: 'actions' },
-      el('button', { class: 'primary', text: 'Add to songs' }),
-      el('button', { type: 'button', class: 'quiet', text: 'Cancel', onclick: () => { open = null; renderHolds(); } })));
+  const form = el('form', { class: 'rowform', 'aria-label': `Add "${h.title}" as a song` },
+    el('span', { class: 'fixed' }, el('span', { class: 'f-label', text: 'Title' }), el('strong', { text: h.title })),
+    field('Artist(s)', el('input', { name: 'artists', value: h.artists, required: true, maxlength: 300 })),
+    el('span', { class: 'pair' },
+      field('Genre', genre),
+      field('Day No', el('input', { name: 'day', type: 'number', step: 1, placeholder: String(data.nextDay), title: `Leave it empty for the next day, ${data.nextDay}`, inputmode: 'numeric' }))),
+    el('span', { class: 'go' },
+      el('button', { class: 'primary small', text: 'Add to songs' }),
+      el('button', { type: 'button', class: 'quiet small', text: 'Cancel', onclick: () => closeEditor() })));
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const f = e.currentTarget;
@@ -285,7 +348,7 @@ function promoteForm(h) {
     if (f.day.value !== '') body.day = Number(f.day.value);
     send('api/songs', { method: 'POST', body });
   });
-  return form;
+  return el('tr', { class: 'editing' }, el('td', { colspan: 4 }, form));
 }
 
 $('#add-hold').addEventListener('submit', async (e) => {
@@ -295,6 +358,17 @@ $('#add-hold').addEventListener('submit', async (e) => {
     f.title.value = f.artists.value = f.note.value = '';
   }
 });
+
+// On a phone the rows to add to fold into one button, to leave the screen to the list.
+for (const opener of document.querySelectorAll('.opener')) {
+  opener.addEventListener('click', () => {
+    const row = opener.closest('tbody');
+    const show = !row.classList.contains('open');
+    row.classList.toggle('open', show);
+    opener.setAttribute('aria-expanded', String(show));
+    if (show) row.querySelector('input').focus();
+  });
+}
 
 // ---- writing ----------------------------------------------------------------------------------------
 
@@ -320,7 +394,7 @@ function remove(table, record, question) {
   if (confirm(question)) send(`api/${table}/${record.id}`, { method: 'DELETE', tag: record.updated });
 }
 
-// ---- tabs ---------------------------------------------------------------------------------------------
+// ---- the sheet's tabs -----------------------------------------------------------------------------------
 
 function showTab(name) {
   for (const b of document.querySelectorAll('[role=tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));

@@ -13,6 +13,7 @@
 </head>
 <body>
   <form id="signin" class="signin" hidden>
+    <img class="logo" src="icon.svg" alt="" width="40" height="40">
     <h1>xrninsta</h1>
     <p class="muted">Sign in with the home server's sync password.</p>
     <label>Name <input name="user" autocomplete="username" required></label>
@@ -23,60 +24,106 @@
 
   <div id="app" hidden>
     <header class="top">
+      <img class="logo" src="icon.svg" alt="" width="24" height="24">
       <h1>xrninsta</h1>
       <span class="muted" id="counts"></span>
       <span class="spacer"></span>
-      <button id="signout" class="quiet">Sign out</button>
+      <button id="signout" class="quiet small">Sign out</button>
     </header>
     <p class="banner" id="bot" hidden></p>
 
-    <nav class="tabs" role="tablist">
-      <button role="tab" data-tab="artists" aria-selected="true">By artist</button>
-      <button role="tab" data-tab="songs" aria-selected="false">Songs</button>
-      <button role="tab" data-tab="holds" aria-selected="false">OnHold</button>
+    <main class="sheets">
+      <!-- Dashboard: the sheet's own layout. Its title and control cells stay put like the
+           sheet's frozen rows; the artists scroll under them with the summary beside. -->
+      <section id="tab-artists" class="tab" role="tabpanel" aria-labelledby="tab-btn-artists">
+        <div class="frozen">
+          <h2 class="sheet-title">Music Dashboard</h2>
+          <div class="cells">
+            <label class="cell pick"><span class="cell-head">Genre Filter</span><select id="artist-genre"></select></label>
+            <label class="cell pick"><span class="cell-head">Sort Day</span><select id="artist-sort">
+              <option value="new">Newest first</option>
+              <option value="old">Oldest first</option>
+            </select></label>
+          </div>
+        </div>
+        <div class="scroll">
+          <div class="dash">
+            <table id="artists" class="sheet artists">
+              <colgroup><col class="c-indent"><col><col class="c-day"></colgroup>
+              <thead><tr class="head"><th scope="col">Artist</th><th scope="col">Title</th><th scope="col" class="day">Day</th></tr></thead>
+            </table>
+            <aside id="summary" class="summary" aria-label="Summary"></aside>
+          </div>
+        </div>
+      </section>
+
+      <!-- Songs: the sheet's columns. The yellow row under the header is the next empty row. -->
+      <section id="tab-songs" class="tab" role="tabpanel" aria-labelledby="tab-btn-songs" hidden>
+        <div class="frozen">
+          <div class="cells">
+            <label class="cell find"><span class="cell-head">Find</span><input id="song-filter" type="search" placeholder="Title or artist" autocomplete="off"></label>
+            <label class="cell pick"><span class="cell-head">Genre Filter</span><select id="song-genre"></select></label>
+            <label class="cell pick"><span class="cell-head">Sort Day</span><select id="song-sort">
+              <option value="new">Newest first</option>
+              <option value="old">Oldest first</option>
+            </select></label>
+            <p class="count muted"><span id="song-count"></span><span class="touch-hint"> · tap a row to fix it</span></p>
+          </div>
+        </div>
+        <div class="scroll">
+          <table class="sheet songs">
+            <colgroup><col><col><col class="c-day"><col class="c-genre"><col class="c-act"></colgroup>
+            <thead><tr class="head">
+              <th scope="col">Title</th><th scope="col">Artist(s)</th><th scope="col" class="num"><span class="long">Day No</span><span class="short">Day</span></th><th scope="col">Genre</th><th scope="col" class="act"><span class="sr">Fix</span></th>
+            </tr></thead>
+            <tbody class="new">
+              <tr><td colspan="5">
+                <button type="button" class="opener" aria-controls="add-song" aria-expanded="false">+ Add a song</button>
+                <form id="add-song" class="rowform" aria-label="Add a song">
+                  <label><span class="f-label">Title</span><input name="title" placeholder="Add a song: title" required maxlength="200"></label>
+                  <label><span class="f-label">Artist(s)</span><input name="artists" placeholder="Artist(s), separated by commas" required maxlength="300"></label>
+                  <label class="third"><span class="f-label">Day No</span><input name="day" type="number" step="1" inputmode="numeric"></label>
+                  <label class="third"><span class="f-label">Genre</span><select name="genre" required></select></label>
+                  <span class="go third"><button class="primary small">Add</button></span>
+                </form>
+              </td></tr>
+            </tbody>
+            <tbody id="songs"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tab-holds" class="tab" role="tabpanel" aria-labelledby="tab-btn-holds" hidden>
+        <div class="frozen slim"><p class="count muted"><span id="hold-count"></span><span class="touch-hint"> · tap a row to fix it</span></p></div>
+        <div class="scroll">
+          <table class="sheet holds">
+            <colgroup><col><col><col class="c-note"><col class="c-act"></colgroup>
+            <thead><tr class="head">
+              <th scope="col">Title</th><th scope="col">Artist(s)</th><th scope="col" class="note">Note</th><th scope="col" class="act"><span class="sr">Actions</span></th>
+            </tr></thead>
+            <tbody class="new">
+              <tr><td colspan="4">
+                <button type="button" class="opener" aria-controls="add-hold" aria-expanded="false">+ Put a song on hold</button>
+                <form id="add-hold" class="rowform" aria-label="Put a song on hold">
+                  <label><span class="f-label">Title</span><input name="title" placeholder="Put a song on hold: title" required maxlength="200"></label>
+                  <label class="third"><span class="f-label">Artist(s)</span><input name="artists" placeholder="Artist(s), if known" maxlength="300"></label>
+                  <label class="third"><span class="f-label">Note</span><input name="note" placeholder="Note" maxlength="1000"></label>
+                  <span class="go third"><button class="primary small">Hold</button></span>
+                </form>
+              </td></tr>
+            </tbody>
+            <tbody id="holds"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <!-- The sheet's tabs, along the bottom where the sheet had them. -->
+    <nav class="tabs" role="tablist" aria-label="Sheets">
+      <button role="tab" id="tab-btn-artists" data-tab="artists" aria-controls="tab-artists" aria-selected="true">Dashboard</button>
+      <button role="tab" id="tab-btn-songs" data-tab="songs" aria-controls="tab-songs" aria-selected="false">Songs</button>
+      <button role="tab" id="tab-btn-holds" data-tab="holds" aria-controls="tab-holds" aria-selected="false">OnHold</button>
     </nav>
-
-    <section id="tab-artists" class="tab">
-      <div class="controls">
-        <label>Genre <select id="artist-genre"></select></label>
-        <label>Day <select id="artist-sort">
-          <option value="new">Newest first</option>
-          <option value="old">Oldest first</option>
-        </select></label>
-      </div>
-      <div class="board">
-        <div id="artists" class="artists"></div>
-        <aside id="summary" class="summary"></aside>
-      </div>
-    </section>
-
-    <section id="tab-songs" class="tab" hidden>
-      <form id="add-song" class="card add">
-        <h2>Add a song</h2>
-        <input name="title" placeholder="Title" required maxlength="200">
-        <input name="artists" placeholder="Artist(s), separated by commas" required maxlength="300">
-        <select name="genre" required></select>
-        <input name="day" type="number" placeholder="Day" step="1">
-        <button class="primary">Add</button>
-      </form>
-      <div class="controls">
-        <input id="song-filter" type="search" placeholder="Find a title or artist">
-        <select id="song-genre"></select>
-      </div>
-      <p class="muted" id="song-count"></p>
-      <div id="songs" class="list"></div>
-    </section>
-
-    <section id="tab-holds" class="tab" hidden>
-      <form id="add-hold" class="card add">
-        <h2>Put a song on hold</h2>
-        <input name="title" placeholder="Title" required maxlength="200">
-        <input name="artists" placeholder="Artist(s), if known" maxlength="300">
-        <input name="note" placeholder="Note" maxlength="1000">
-        <button class="primary">Hold</button>
-      </form>
-      <div id="holds" class="list"></div>
-    </section>
   </div>
 </body>
 </html>

@@ -1,194 +1,457 @@
-/* xrninsta: the family's colours (xrnhub, xrnloops' web app) over the sheet's layout.
-   No inline styles: the CSP forbids them, so the script sets each genre's colour through CSSOM. */
+/* xrninsta: the Google Sheet it replaced, as a page. The sheet's fills (green headers, yellow cells
+   to type in, the pink artist rows, the genre colours), its frozen top rows and its tabs along the
+   bottom; tables, not cards. No inline styles: the CSP forbids them, so the script sets each
+   genre's colour through CSSOM. */
 
 :root {
-  --bg: #f2f2f4;
-  --surface: #ffffff;
-  --surface-2: #ebebef;
-  --line: #e3e3e8;
-  --outline: #c9c9cf;
-  --text: #1b1b1e;
-  --muted: #6b6b73;
-  --accent: #16a34a;
+  --bg: #ffffff;
+  --chrome: #f9fbfd;
+  --chrome-2: #f1f3f4;
+  --grid: #e2e3e3;
+  --line: #c4c7c5;
+  --frozen: #bdc1c6;
+  --text: #1f1f1f;
+  --muted: #5f6368;
+  --day: #555555;
+  /* The sheet's own fills. */
+  --head: #d9ead3;
+  --col-head: #cfe2f3;
+  --artist: #ead1dc;
+  --input: #fff2cc;
+  --input-line: #ecd892;
+  --new-row: #fffaeb;
+  --label: #f3f3f3;
+  --box: #dddddd;
+  --hover: rgba(60, 64, 67, 0.08);
+  --rule-on-fill: rgba(255, 255, 255, 0.6);
+  --focus: #1a73e8;
+  --accent: #188038;
+  --accent-text: #188038;
   --on-accent: #ffffff;
-  --danger: #dc2626;
-  --warn: #a16207;
-  --warn-bg: #fef3c7;
-  /* The sheet's genre colours are pale in both themes, so what sits on them is always dark. */
-  --on-genre: #1b1b1e;
+  --danger: #c5221f;
+  --warn: #6b4e00;
+  --warn-bg: #fef7e0;
+  /* The genre colours are pale, so what sits on them is dark. */
+  --on-genre: #1f1f1f;
+  --row: 24px;
+  --head-h: 28px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1f1f23;
-    --surface: #2b2b30;
-    --surface-2: #3a3a40;
-    --line: #37373c;
-    --outline: #55555c;
-    --text: #f4f4f5;
-    --muted: #aaaaac;
-    --accent: #22c55e;
+    --bg: #1b1c1d;
+    --chrome: #232426;
+    --chrome-2: #2a2b2e;
+    --grid: #333538;
+    --line: #46484c;
+    --frozen: #5f6368;
+    --text: #e8eaed;
+    --muted: #a0a4a9;
+    --day: #b8bcc1;
+    --head: #263d29;
+    --col-head: #1d3550;
+    --artist: #4b2a3a;
+    --input: #3b3418;
+    --input-line: #6b5c25;
+    --new-row: #29261a;
+    --label: #26272a;
+    --box: #3c3e41;
+    --hover: rgba(255, 255, 255, 0.07);
+    --rule-on-fill: rgba(0, 0, 0, 0.28);
+    --focus: #8ab4f8;
+    --accent: #34a853;
+    --accent-text: #81c995;
     --on-accent: #0b2a16;
-    --danger: #f04242;
-    --warn: #ffd60a;
-    --warn-bg: #3d3412;
+    --danger: #f28b82;
+    --warn: #fdd663;
+    --warn-bg: #3a3214;
+    --on-genre: #f1f3f4;
   }
 }
 
 * { box-sizing: border-box; }
+html, body { height: 100%; }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 400 15px/1.45 system-ui, sans-serif;
+  font: 400 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Arial, sans-serif;
+  -webkit-text-size-adjust: 100%;
 }
 
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 [hidden] { display: none !important; }
 
-h1 { font-size: 20px; margin: 0; }
+h1 { font-size: 17px; font-weight: 600; margin: 0; }
 h2 { font-size: 15px; margin: 0; }
-h3 { font-size: 14px; margin: 0 0 6px; }
 
 .muted { color: var(--muted); }
 .error { color: var(--danger); margin: 0; }
 .spacer { flex: 1; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 input, select, textarea {
-  background: var(--surface);
-  border: 1px solid var(--outline);
-  border-radius: 8px;
-  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px 8px;
   min-width: 0;
 }
 
 button.primary, button.quiet, button.danger {
-  border-radius: 8px;
-  padding: 7px 14px;
+  border-radius: 4px;
+  padding: 6px 14px;
   border: 1px solid transparent;
   font-weight: 600;
+  white-space: nowrap;
 }
+button.small { padding: 2px 10px; font-size: 12px; line-height: 18px; }
 button.primary { background: var(--accent); color: var(--on-accent); }
-button.quiet { background: var(--surface-2); border-color: var(--line); }
-button.danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+button.quiet { background: var(--chrome-2); border-color: var(--line); }
+button.danger { background: transparent; color: var(--danger); border-color: currentColor; }
+button.primary:hover { filter: brightness(1.08); }
+button.quiet:hover { background: var(--grid); }
+button.danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+button.link {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--focus);
+  font-weight: 600;
+  font-size: 12px;
+}
 
 /* ---- signing in ---- */
 
 .signin {
   max-width: 340px;
-  margin: 12vh auto;
-  padding: 0 16px;
+  margin: 0 auto;
+  padding: 12vh 16px 0;
   display: grid;
   gap: 12px;
 }
+.signin h1 { font-size: 22px; }
+.signin p { margin: 0; }
 .signin label { display: grid; gap: 4px; }
 
-/* ---- the frame ---- */
+/* ---- the frame: a title bar, the sheet, and its tabs at the bottom ---- */
 
-#app { max-width: 1100px; margin: 0 auto; padding: 16px 16px 48px; }
-
-.top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-
-.banner {
-  background: var(--warn-bg);
-  color: var(--warn);
-  border-radius: 10px;
-  padding: 10px 14px;
-  margin: 12px 0 0;
+#app {
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
 }
 
-.tabs { display: flex; gap: 4px; margin: 16px 0; border-bottom: 1px solid var(--line); }
+.top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--line);
+}
+.logo { display: block; }
+.top .muted { white-space: nowrap; }
+
+.banner {
+  flex: none;
+  margin: 0;
+  padding: 6px 12px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-bottom: 1px solid var(--line);
+}
+
+.sheets { flex: 1; min-height: 0; display: flex; }
+.tab { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+
+/* What stays put while the rows scroll, like the sheet's frozen top rows. */
+.frozen { flex: none; padding: 10px 12px; }
+.frozen.slim { padding: 6px 12px; }
+.sheet-title { font-size: 22px; font-weight: 700; margin: 0 0 10px; }
+.count { margin: 0; }
+
+.scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+
+.tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 0 8px env(safe-area-inset-bottom);
+  background: var(--chrome-2);
+  border-top: 1px solid var(--line);
+}
 .tabs button {
   background: none;
   border: none;
-  padding: 8px 14px;
-  border-bottom: 2px solid transparent;
+  border-bottom: 3px solid transparent;
+  padding: 9px 18px 7px;
   color: var(--muted);
   font-weight: 600;
 }
-.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tabs button:hover { background: var(--hover); }
+.tabs button[aria-selected="true"] {
+  background: var(--bg);
+  color: var(--accent-text);
+  border-bottom-color: var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
 
-.controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
-.controls label { display: flex; gap: 6px; align-items: center; color: var(--muted); }
-#song-filter { flex: 1; min-width: 180px; }
+/* ---- control cells: a green header over a yellow cell to change, as in the sheet ---- */
 
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
-
-/* ---- by artist ---- */
-
-.board { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
-.artists { display: grid; gap: 10px; }
-.group { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
-.group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
-.tinted {
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  background: var(--genre, var(--surface-2));
-  color: var(--on-genre);
-  border-radius: 6px;
+.cells { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0 1px; }
+.cell { position: relative; display: grid; flex: 0 1 190px; min-width: 120px; }
+.cell.find { flex-basis: 320px; }
+.cell-head { background: var(--head); font-weight: 700; padding: 3px 8px; line-height: 18px; }
+.cell select, .cell input {
+  height: 26px;
+  background: var(--input);
+  border: none;
+  border-bottom: 1px solid var(--input-line);
+  border-radius: 0;
   padding: 3px 8px;
 }
-.day { font-weight: 600; white-space: nowrap; color: inherit; opacity: 0.75; }
-
-.summary { display: grid; gap: 12px; position: sticky; top: 12px; }
-.summary table { width: 100%; border-collapse: collapse; }
-.summary th { text-align: left; font-weight: 400; padding: 3px 0; }
-.summary td { text-align: right; font-weight: 600; padding: 3px 0; }
-.summary tr + tr { border-top: 1px solid var(--line); }
-
-.chip {
-  display: inline-block;
-  background: var(--genre, var(--surface-2));
-  color: var(--on-genre);
-  border-radius: 999px;
-  padding: 1px 9px;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
+.cell select { appearance: none; padding-right: 24px; cursor: pointer; }
+/* The sheet's dropdown chip, which the CSP won't let an image draw. */
+.cell.pick::after {
+  content: "▾";
+  position: absolute;
+  right: 8px;
+  bottom: 3px;
+  font-size: 14px;
+  color: var(--muted);
+  pointer-events: none;
 }
-.chip.odd { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+.cells .count { align-self: flex-end; padding: 0 12px 4px; }
 
-/* ---- songs and holds ---- */
+/* ---- the tables ---- */
 
-.add { display: grid; grid-template-columns: 2fr 2fr 1fr 1fr auto; gap: 8px; align-items: center; margin-bottom: 16px; }
-.add h2 { grid-column: 1 / -1; }
-#add-hold.add { grid-template-columns: 2fr 2fr 2fr auto; }
-
-.list { display: grid; gap: 6px; }
-.row {
-  display: grid;
-  grid-template-columns: 70px minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
+.sheet {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.sheet th, .sheet td {
+  height: var(--row);
+  padding: 3px 8px;
   text-align: left;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 8px 12px;
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--grid);
+  border-right: 1px solid var(--grid);
 }
-.row:hover { border-color: var(--outline); }
-.row .day { color: var(--muted); opacity: 1; }
-.what { display: grid; min-width: 0; }
-.what > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The header row is exactly --head-h tall (a fixed line, its padding and the frozen line under it),
+   so the row to type in can stick right under it. */
+.sheet thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: var(--head-h);
+  padding-top: 4px;
+  padding-bottom: 4px;
+  line-height: 18px;
+  background: var(--head);
+  font-weight: 700;
+  border-bottom: 2px solid var(--frozen);
+}
+.sheet th:first-child, .sheet td:first-child { border-left: 1px solid var(--grid); }
+.sheet .num, .sheet .day { text-align: right; font-variant-numeric: tabular-nums; }
 
-.edit { display: grid; gap: 10px; }
-.edit label { display: grid; gap: 4px; color: var(--muted); }
-.edit label > * { color: var(--text); }
-.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sheet tr.rec { cursor: pointer; }
+.sheet tr.rec:hover > * { background-image: linear-gradient(var(--hover), var(--hover)); }
+.sheet tr.empty td { padding: 12px 8px; }
 
-.hold { display: grid; gap: 4px; }
-.note { margin: 2px 0 6px; white-space: pre-wrap; }
+/* The genre's colour from the sheet. Unknown genres get a red outline instead. */
+.g { background-color: var(--genre, transparent); color: var(--on-genre); }
+.g.odd { color: var(--danger); box-shadow: inset 0 0 0 1px var(--danger); }
+.sheet td.g { border-bottom-color: var(--rule-on-fill); }
+.sheet td.genre { font-weight: 700; }
 
-@media (max-width: 760px) {
-  .board { grid-template-columns: 1fr; }
-  .summary { position: static; order: -1; grid-template-columns: 1fr 1fr; }
-  .summary .card:first-child { grid-column: 1 / -1; }
-  .add, #add-hold.add { grid-template-columns: 1fr 1fr; }
-  .add input[name="title"], .add input[name="artists"], #add-hold input { grid-column: 1 / -1; }
-  .row { grid-template-columns: 56px minmax(0, 1fr) auto; }
+/* In the dark the pale fills would glare, so each keeps its hue, darker and a little stronger. */
+@media (prefers-color-scheme: dark) {
+  @supports (color: color-mix(in oklab, red, blue)) {
+    .g { background-color: color-mix(in oklab, var(--genre, transparent) 42%, var(--bg)); }
+  }
+  @supports (color: oklch(from red l c h)) {
+    .g { background-color: oklch(from var(--genre, transparent) calc(l * 0.5) calc(c * 1.6) h); }
+  }
+}
+
+/* ---- the Dashboard ---- */
+
+.dash {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(280px, 24vw, 380px);
+  gap: 24px;
+  align-items: start;
+  padding: 0 12px 24px;
+}
+.artists col.c-indent { width: 200px; }
+.artists col.c-day { width: 96px; }
+.artists thead th { background: var(--col-head); }
+.artists tr.artist th {
+  background: var(--artist);
+  font-weight: 700;
+  color: var(--text);
+}
+.artists td.day { font-weight: 700; color: var(--day); }
+.artists tr.gap td { height: 10px; padding: 0; border-right: none; border-left: none; }
+
+.summary { display: grid; gap: 18px; align-items: start; position: sticky; top: 0; }
+.mini { width: 100%; border-collapse: separate; border-spacing: 0; }
+.mini th, .mini td { padding: 3px 8px; height: var(--row); text-align: left; font-weight: 400; }
+.mini thead th { background: var(--head); font-weight: 700; }
+.mini tbody td { text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; width: 40%; }
+.mini tbody tr + tr > * { border-top: 1px solid var(--grid); }
+.mini.kv tbody th, .mini.kv tbody td { border: 1px solid var(--box); }
+.mini.kv tbody tr + tr > * { border-top: none; }
+.mini.kv tbody th { background: var(--label); font-weight: 700; width: 50%; }
+.mini.kv tbody td { text-align: left; font-weight: 400; }
+.mini.legend tbody th { font-weight: 700; }
+.mini.legend tbody tr + tr > * { border-top-color: var(--rule-on-fill); }
+
+/* ---- Songs and OnHold ---- */
+
+.songs col.c-day { width: 84px; }
+.songs col.c-genre { width: 112px; }
+.songs col.c-act { width: 56px; }
+.holds col.c-act { width: 260px; }
+.songs, .holds { margin: 0 12px 24px; width: calc(100% - 24px); }
+
+.sheet .act { text-align: center; }
+.sheet.holds .act { text-align: left; }
+.sheet td.act { overflow: visible; }
+.act button + button { margin-left: 4px; }
+.songs .act .link { opacity: 0; }
+.songs tr.rec:hover .act .link, .songs .act .link:focus-visible { opacity: 1; }
+
+.holds thead th { background: var(--input); }
+
+.note-under, .short, .opener, .touch-hint { display: none; }
+@media (hover: none) { .touch-hint { display: inline; } }
+
+/* A row to type in: the next empty row under the header, and a row being fixed. Its fields line up
+   with the columns above them, so it reads as editing the cells in place. */
+.sheet tbody.new td, .sheet tr.editing td { padding: 0; background: var(--new-row); white-space: normal; overflow: visible; }
+.sheet tbody.new td { border-bottom: 1px solid var(--input-line); }
+.sheet tr.editing td { box-shadow: inset 0 0 0 2px var(--focus); }
+
+/* Relative, so the hidden labels' boxes stay inside the row and never stretch the page. */
+.rowform { position: relative; display: grid; align-items: center; }
+.songs .rowform { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 84px 112px 56px; }
+.holds .rowform { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 260px; }
+.rowform > label, .rowform > .fixed, .rowform > .pair, .rowform > .go { padding: 3px 4px; min-width: 0; }
+.rowform input, .rowform select, .rowform textarea {
+  width: 100%;
+  height: 24px;
+  padding: 2px 4px;
+  border-radius: 2px;
+  border: 1px solid var(--input-line);
+  background: var(--bg);
+}
+.rowform textarea { resize: vertical; min-height: 24px; height: auto; display: block; }
+.rowform input[type="number"] { text-align: right; }
+.rowform .f-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.rowform .fixed { padding-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rowform .pair { display: flex; gap: 10px; }
+.rowform .pair > label { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.rowform .pair .f-label { position: static; width: auto; height: auto; overflow: visible; clip-path: none; color: var(--muted); }
+.rowform .go { display: flex; gap: 4px; }
+.songs .rowform .go { justify-content: center; }
+.holds .rowform .go { padding-left: 8px; }
+.rowform .actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 4px 6px;
+}
+
+@media (min-width: 701px) {
+  .sheet tbody.new td { position: sticky; top: var(--head-h); z-index: 2; }
+}
+
+/* ---- a phone ---- */
+
+@media (max-width: 700px) {
+  :root { --row: 26px; }
+  .top { padding: 6px 10px; gap: 8px; }
+  .top .logo { width: 20px; height: 20px; }
+  .top h1 { font-size: 16px; }
+  .frozen { padding: 8px 10px; }
+  .sheet-title { font-size: 18px; margin-bottom: 6px; }
+  .cell { flex: 1 1 0; min-width: 0; }
+  .cell.find { flex: 1 1 100%; margin-bottom: 1px; }
+  .cells .count { flex: 1 1 100%; padding: 4px 0 0; }
+
+  .tabs { padding-left: 0; padding-right: 0; gap: 0; }
+  .tabs button { flex: 1; padding: 11px 6px 9px; }
+
+  /* Rows wrap instead of cutting titles short. */
+  .sheet th, .sheet td { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; padding: 3px 6px; }
+  .sheet thead th { white-space: nowrap; }
+
+  .dash { grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 0 0 24px; }
+  .summary { position: static; order: -1; grid-template-columns: 1fr 1fr; gap: 14px 8px; padding: 0 10px; }
+  .summary .kv { grid-column: 1 / -1; }
+  .mini tbody td { width: 1%; padding: 3px 6px; }
+  .mini.kv tbody td { width: auto; }
+  .artists col.c-indent { width: 12px; }
+  .artists col.c-day { width: 76px; }
+  .artists thead th:first-child { font-size: 0; }
+
+  .songs, .holds { margin: 0 0 24px; width: 100%; }
+  .songs col.c-day { width: 44px; }
+  .songs col.c-genre { width: 86px; }
+  .sheet td.genre { white-space: nowrap; overflow-wrap: normal; }
+  /* The Fix buttons and the Note column fold away: a row opens with a tap, and the note shows
+     under its title. The Note column stays, empty, so the cells after it keep their places. */
+  .songs col.c-act, .holds col.c-note { width: 0; }
+  .songs .act { display: none; }
+  .holds .note { padding: 0; border: none; visibility: hidden; white-space: nowrap; font-size: 0; }
+  .holds .fix { display: none; }
+  .holds col.c-act { width: 124px; }
+  .holds .act button.small { padding: 4px 9px; }
+  .note-under { display: block; color: var(--muted); font-size: 12px; white-space: pre-wrap; }
+  .long { display: none; }
+  .short { display: inline; }
+  .act button + button { margin-left: 4px; }
+
+  .opener {
+    display: block;
+    width: 100%;
+    border: none;
+    background: none;
+    padding: 0 10px;
+    height: 34px;
+    text-align: left;
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+  .sheet tbody.new:not(.open) .rowform { display: none; }
+
+  /* Fields stack in sixths: a whole row each, or "half" and "third" side by side. */
+  .songs .rowform, .holds .rowform { grid-template-columns: repeat(6, minmax(0, 1fr)); padding: 4px 6px; }
+  .rowform > * { grid-column: span 6; }
+  .rowform > .half { grid-column: span 3; }
+  .rowform > .third { grid-column: span 2; }
+  .rowform > label, .rowform > .fixed, .rowform > .pair, .rowform > .go { padding: 2px; }
+  .rowform .f-label {
+    position: static; width: auto; height: auto; overflow: visible; clip-path: none;
+    display: block; font-size: 11px; color: var(--muted);
+  }
+  .rowform input, .rowform select, .rowform textarea { height: 32px; font-size: 14px; }
+  .rowform .fixed { padding-left: 2px; white-space: normal; }
+  .rowform .pair > label { display: block; }
+  .rowform > .go { justify-content: flex-start; align-self: end; }
+  .rowform > .go.third button { flex: 1; height: 32px; }
+  button.small { padding: 4px 12px; font-size: 13px; }
 }

@@ -3,7 +3,7 @@
 // Every song here is made up; never put real ones in this repo.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { dashboard, songList, TOP_ARTISTS } from '../web/model.js';
+import { dashboard, DOUBLE_MS, holdList, secondClick, songList, TOP_ARTISTS } from '../web/model.js';
 
 const GENRES = ['VPOP', 'USUK', 'JPOP', 'MISC', 'KPOP', 'GAME', 'INST', 'VOCALOID'];
 let nextId = 1;
@@ -89,4 +89,41 @@ test('Find matches a title or an artist whatever the accents and case', () => {
   assert.deepEqual(songList(data, { words: '  DOAN ' }).map((s) => s.title), ['Moonlight']);
   assert.deepEqual(songList(data, { words: 'n', genre: 'KPOP' }).map((s) => s.title), ['Sunrise']);
   assert.equal(songList(data, { words: 'nothing like it' }).length, 0);
+});
+
+test("Find narrows the Dashboard to the songs it names, and the summary counts only those", () => {
+  const data = sheet(
+    song('Paper Lanterns', 'Mai Linh', 3, 'VPOP'),
+    song('Harbour Lights', 'Mai Linh, The Gulls', 5, 'VPOP'),
+    song('Low Tide', 'The Gulls', 4, 'USUK'),
+    song('Đêm Trăng', 'Bitwise', 7, 'GAME'),
+  );
+  const byArtist = dashboard(data, { words: 'gulls' });
+  assert.deepEqual(byArtist.artists.map((a) => [a.name, a.songs.map((s) => s.title)]), [
+    ['The Gulls', ['Harbour Lights', 'Low Tide']],
+    ['Mai Linh', ['Harbour Lights']],
+  ]);
+  assert.equal(byArtist.songs, 2);
+  const byTitle = dashboard(data, { words: 'dem trang' });
+  assert.deepEqual(byTitle.artists.map((a) => a.name), ['Bitwise'], 'found without its accents');
+  assert.equal(dashboard(data, { words: '   ' }).songs, 4, 'nothing typed shows every song');
+});
+
+test('Find goes through the songs on hold too, by title, artist or note', () => {
+  const data = { genres: GENRES, songs: [], holds: [
+    { id: 1, title: 'Night Market', artists: 'Lantern Club', note: 'ask for the key' },
+    { id: 2, title: 'Rain Song', artists: '', note: 'Phương said maybe' },
+    { id: 3, title: 'Blue Hour', artists: 'Mai Linh', note: '' },
+  ] };
+  assert.deepEqual(holdList(data, { words: 'lantern' }).map((h) => h.id), [1]);
+  assert.deepEqual(holdList(data, { words: 'phuong' }).map((h) => h.id), [2], 'a note, without its accents');
+  assert.deepEqual(holdList(data, { words: '' }).map((h) => h.id), [1, 2, 3]);
+});
+
+test('a row opens on a second click on it, not on one click', () => {
+  const at = 1000;
+  assert.equal(secondClick(null, 'song:1', at), false, 'a first click only picks it');
+  assert.equal(secondClick({ key: 'song:1', at }, 'song:1', at + 250), true);
+  assert.equal(secondClick({ key: 'song:1', at }, 'song:1', at + DOUBLE_MS + 1), false, 'too slow: two single clicks');
+  assert.equal(secondClick({ key: 'song:1', at }, 'song:2', at + 100), false, 'another row');
 });

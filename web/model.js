@@ -7,13 +7,21 @@ export const fold = (s) => String(s || '').toLowerCase().normalize('NFD').replac
 export const splitArtists = (t) => String(t || '').split(',').map((s) => s.trim()).filter(Boolean);
 const byName = (a, b) => a.localeCompare(b);
 
+// The words typed into Find, found in any of a record's texts whatever their accents or case.
+export function matches(words, ...texts) {
+  const find = fold(String(words || '').trim());
+  return !find || texts.some((text) => fold(text).includes(find));
+}
+
 // The Dashboard: songs grouped under each of their artists, the artist with most songs first, and
 // the summary beside it. Like the sheet, it leaves out songs it can't place: no title, no artist, an
-// odd day or a genre the bot doesn't know.
-export function dashboard(data, { genre = 'ALL', oldest = false } = {}) {
+// odd day or a genre the bot doesn't know. Find keeps the songs whose title or artists hold its words,
+// so an artist's name brings up all of theirs, and the summary counts what's shown.
+export function dashboard(data, { genre = 'ALL', oldest = false, words = '' } = {}) {
   const rows = data.songs
     .filter((s) => s.title.trim() && s.artists.trim() && Number.isFinite(s.day) && s.day >= -5 && data.genres.includes(s.genre))
-    .filter((s) => genre === 'ALL' || s.genre === genre);
+    .filter((s) => genre === 'ALL' || s.genre === genre)
+    .filter((s) => matches(words, s.title, s.artists));
   const byArtist = new Map();
   const genreCount = new Map();
   for (const s of rows) {
@@ -38,10 +46,24 @@ export function dashboard(data, { genre = 'ALL', oldest = false } = {}) {
 // The Songs tab: every song, odd ones included so they can be fixed, found by title or artist
 // whatever the accents, newest first unless asked for the sheet's own order.
 export function songList(data, { words = '', genre = 'ALL', oldest = false } = {}) {
-  const find = fold(words.trim());
   const order = oldest ? (a, b) => a.day - b.day || a.id - b.id : (a, b) => b.day - a.day || b.id - a.id;
   return data.songs
     .filter((s) => genre === 'ALL' || s.genre === genre)
-    .filter((s) => !find || fold(s.title).includes(find) || fold(s.artists).includes(find))
+    .filter((s) => matches(words, s.title, s.artists))
     .sort(order);
+}
+
+// The OnHold tab: the songs on hold, in their order, found by title, artist or note.
+export function holdList(data, { words = '' } = {}) {
+  return data.holds.filter((h) => matches(words, h.title, h.artists, h.note));
+}
+
+// A row opens to be fixed on a second click or tap on it within this long: one click only picks it,
+// so scrolling past or reading along with a finger or the mouse doesn't open a form under it.
+export const DOUBLE_MS = 400;
+
+// Whether a click on the row [key] at [now] is the second of two: [last] is the click before, as
+// { key, at }. A phone's double tap counts as well as a mouse's double click.
+export function secondClick(last, key, now) {
+  return Boolean(last) && last.key === key && now - last.at < DOUBLE_MS;
 }

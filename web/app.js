@@ -1,7 +1,7 @@
 // xrninsta's page: the sheet's Dashboard, its Songs and its OnHold, on the home server.
 // Everything a person typed goes in through textContent: the host is shared with other apps' pages.
 
-import { dashboard, songList } from './model.js';
+import { dashboard, holdList, secondClick, songList } from './model.js';
 
 const $ = (sel) => document.querySelector(sel);
 const CLIENT = { 'X-Xrn-Client': 'xrninsta' };
@@ -17,6 +17,7 @@ const POINTER = matchMedia('(hover: hover) and (pointer: fine)');
 
 let data = null; // {genres, colors, nextDay, songs, holds}
 let open = null; // the record being edited: "song:<id>", "hold:<id>" or "promote:<id>"
+let lastClick = null; // the row clicked last, { key, at }, so a second click on it opens it
 
 class Stop extends Error {}
 class ApiError extends Error {
@@ -68,13 +69,26 @@ function genreSelect(select, { all = false, value } = {}) {
 const field = (label, input, size) => el('label', { class: size }, el('span', { class: 'f-label', text: label }), input);
 const emptyRow = (span, text) => el('tr', { class: 'empty' }, el('td', { colspan: span, class: 'muted', text }));
 
-// A row in a table opens for fixing on a click anywhere in it except its own buttons.
-function opens(key) {
+// A row in a table opens for fixing on a double click (a phone's double tap) anywhere in it except
+// its own buttons; one click only picks it out, so reading along a list with the mouse or a finger
+// doesn't open a form in the middle of it. Its Fix button still opens it at once.
+function opens(key, then = () => edit(key)) {
   return (e) => {
     if (e.target.closest('button, a, input, select, textarea')) return;
-    edit(key);
+    const at = performance.now();
+    if (secondClick(lastClick, key, at)) {
+      lastClick = null;
+      then();
+      return;
+    }
+    lastClick = { key, at };
+    for (const row of document.querySelectorAll('tr.picked')) row.classList.remove('picked');
+    e.currentTarget.classList.add('picked');
   };
 }
+
+// A double click would also select the word under it: the row opens instead. A drag still selects.
+const keepWords = (e) => { if (e.detail > 1) e.preventDefault(); };
 
 // Opens one row for fixing, and so closes any other, in either table.
 function edit(key) {
@@ -172,17 +186,17 @@ function render() {
 
 function renderArtists() {
   const genre = $('#artist-genre').value || 'ALL';
-  const board = dashboard(data, { genre, oldest: $('#artist-sort').value === 'old' });
+  const board = dashboard(data, { genre, oldest: $('#artist-sort').value === 'old', words: $('#find').value });
 
   // Each artist is a row group, as in the sheet: their name and count, then their songs, each title
-  // filled with its genre's colour. A song opens in Songs to be fixed.
+  // filled with its genre's colour. A song double-clicked opens in Songs to be fixed.
   const table = $('#artists');
   for (const body of [...table.tBodies]) body.remove();
   if (!board.artists.length) table.append(el('tbody', {}, emptyRow(3, 'No songs here.')));
   for (const artist of board.artists) {
     table.append(el('tbody', { class: 'group' },
       el('tr', { class: 'artist' }, el('th', { colspan: 3, scope: 'rowgroup', text: `${artist.name} (${artist.songs.length})` })),
-      artist.songs.map((s) => el('tr', { class: 'rec', title: 'Open in Songs to fix it', onclick: () => openSong(s.id) },
+      artist.songs.map((s) => el('tr', { class: 'rec', title: 'Double-click to fix it in Songs', onclick: opens(`board:${s.id}`, () => openSong(s.id)), onmousedown: keepWords },
         el('td', { class: 'indent' }),
         tint(el('td', { text: s.title }), s.genre),
         el('td', { class: 'day', text: `Day ${s.day}` }))),
@@ -209,8 +223,9 @@ function mini(head, rows, kind = '') {
 function openSong(id) {
   const shown = songList(data, songFilters()).some((s) => s.id === id);
   if (!shown) {
-    $('#song-filter').value = '';
+    $('#find').value = '';
     $('#song-genre').value = 'ALL';
+    render();
   }
   showTab('songs');
   edit(`song:${id}`);
@@ -223,7 +238,7 @@ $('#artist-sort').addEventListener('change', renderArtists);
 // ---- Songs ----------------------------------------------------------------------------------------
 
 function songFilters() {
-  return { words: $('#song-filter').value, genre: $('#song-genre').value || 'ALL', oldest: $('#song-sort').value === 'old' };
+  return { words: $('#find').value, genre: $('#song-genre').value || 'ALL', oldest: $('#song-sort').value === 'old' };
 }
 
 function renderSongs() {
@@ -236,7 +251,7 @@ function renderSongs() {
 
 function songRow(s) {
   const key = `song:${s.id}`;
-  return el('tr', { class: 'rec', onclick: opens(key) },
+  return el('tr', { class: 'rec', onclick: opens(key), onmousedown: keepWords },
     el('td', { text: s.title }),
     el('td', { text: s.artists }),
     el('td', { class: 'num', text: String(s.day) }),
@@ -267,7 +282,19 @@ function songForm(s) {
   return el('tr', { class: 'editing' }, el('td', { colspan: 5 }, form));
 }
 
-$('#song-filter').addEventListener('input', renderSongs);
+// Find, at the top right, narrows every tab at once, so switching tab keeps what was asked for.
+$('#find').addEventListener('input', () => { if (data) render(); });
+// / or Ctrl+F goes to it, as in a sheet, unless something else is being typed into.
+document.addEventListener('keydown', (e) => {
+  if ($('#app').hidden) return;
+  const typing = e.target.closest?.('input, select, textarea, [contenteditable]');
+  const slash = e.key === '/' && !typing && !e.ctrlKey && !e.metaKey && !e.altKey;
+  const find = (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f';
+  if (!slash && !find) return;
+  e.preventDefault();
+  $('#find').focus();
+  $('#find').select();
+});
 $('#song-genre').addEventListener('change', renderSongs);
 $('#song-sort').addEventListener('change', () => {
   try { localStorage.setItem('xrninsta.songSort', $('#song-sort').value); } catch { /* private window */ }
@@ -290,17 +317,19 @@ $('#add-song').addEventListener('submit', async (e) => {
 
 function renderHolds() {
   const n = data.holds.length;
-  $('#hold-count').textContent = n === 1 ? '1 song on hold' : `${n} songs on hold`;
-  $('#holds').replaceChildren(...(n ? data.holds.map((h) => {
+  const rows = holdList(data, { words: $('#find').value });
+  const total = n === 1 ? '1 song on hold' : `${n} songs on hold`;
+  $('#hold-count').textContent = rows.length === n ? total : `${rows.length} of ${total}`;
+  $('#holds').replaceChildren(...(rows.length ? rows.map((h) => {
     if (open === `hold:${h.id}`) return holdForm(h);
     if (open === `promote:${h.id}`) return promoteForm(h);
     return holdRow(h);
-  }) : [emptyRow(4, 'Nothing on hold.')]));
+  }) : [emptyRow(4, n ? 'Nothing on hold matches.' : 'Nothing on hold.')]));
 }
 
 function holdRow(h) {
   const key = `hold:${h.id}`;
-  return el('tr', { class: 'rec', onclick: opens(key) },
+  return el('tr', { class: 'rec', onclick: opens(key), onmousedown: keepWords },
     // On a phone the Note column folds away and the note sits under the title.
     el('td', {}, h.title, h.note ? el('span', { class: 'note-under', text: h.note }) : null),
     el('td', { text: h.artists }),

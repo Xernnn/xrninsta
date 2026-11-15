@@ -7,8 +7,8 @@
 The song-of-the-day list, kept by a Telegram bot. Send it a song (title, artist, genre, one per
 line) and it becomes the next day's; it warns about a song that's already there, keeps an OnHold
 list of songs for later, searches by title, artist, genre or "day 26", and shows leaderboards. A
-page on the home server shows everything by artist, as the sheet's Dashboard did, and lets you fix
-or delete anything.
+page on the home server looks like the sheet did, with its Dashboard, Songs and OnHold tabs, and
+lets you fix or delete anything.
 
 It used to be a Google Apps Script bound to a Google Sheet. That script is kept in
 [apps-script/code.gs](apps-script/code.gs) until the switch is done. This is the same bot, word for
@@ -18,9 +18,19 @@ word in Vietnamese, with the songs in an SQLite file on the home server and noth
 
 - **The bot asks Telegram for messages** (long polling) instead of Telegram posting to a web app, so
   the bot needs no public address and no webhook key.
-- **The page replaces the sheet.** By artist (the Dashboard, with its genre filter, sort and
-  summary), Songs (every song, find, add, fix, delete) and OnHold (add, fix, delete, or add as a
-  song). It's at `/xrninsta`, for the server's owner, signed in with the sync password.
+- **The page replaces the sheet, and looks like it.** The same tabs along the bottom, the same
+  fills (green headers, yellow cells to change, pink artist rows, each title in its genre's
+  colour) and the same columns, full width, with the top rows frozen while the rest scrolls:
+  - Dashboard: Genre Filter and Sort Day, each artist's songs under their name, and the Summary,
+    Artist and Genre counts beside them. Click a song to fix it in Songs.
+  - Songs: Title, Artist(s), Day No and Genre, with Find, a genre filter and Sort Day (newest
+    first, or oldest first as the sheet had them). The yellow row under the header adds a song;
+    click a row to fix or delete it.
+  - OnHold: Title, Artist(s) and Note, with a row to add to, and Add as a song, Fix and Delete.
+
+  It's at `/xrninsta`, for the server's owner, signed in with the sync password. On a phone the
+  tables fit the screen: the rows wrap, the Note column folds under the title, and the rows to add
+  to open from a button.
 - **Records have ids, not rows.** An imported song keeps its sheet row as its id, so the buttons on
   the script's old messages (Undo, the OnHold list) still find the right song.
 - **The matching is the script's, exactly.** Normalising, the duplicate checks and the search scores
@@ -70,7 +80,9 @@ in bot.json the page runs and the bot doesn't.
 
 ```sh
 cd server && python3 -m unittest test_xrninsta
+node --test test
 ```
 
-They drive the bot against a fake Telegram, import a made-up sheet, and use the page's API over
-HTTP. Every song in them is made up; never add real ones, or an export of the sheet, to this repo.
+The first drive the bot against a fake Telegram, import a made-up sheet, and use the page's API
+over HTTP; the second check the page's own arithmetic (`web/model.js`: the Dashboard's groups and
+counts, and the Songs tab's find and order). Every song in them is made up; never add real ones, or an export of the sheet, to this repo.

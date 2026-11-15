@@ -23,6 +23,7 @@
   --label: #f3f3f3;
   --box: #dddddd;
   --hover: rgba(60, 64, 67, 0.08);
+  --picked: rgba(26, 115, 232, 0.14); /* a row clicked once: the one a second click opens */
   --rule-on-fill: rgba(255, 255, 255, 0.6);
   --focus: #1a73e8;
   --accent: #188038;
@@ -57,6 +58,7 @@
     --label: #26272a;
     --box: #3c3e41;
     --hover: rgba(255, 255, 255, 0.07);
+    --picked: rgba(138, 180, 248, 0.2);
     --rule-on-fill: rgba(0, 0, 0, 0.28);
     --focus: #8ab4f8;
     --accent: #34a853;
@@ -157,6 +159,11 @@ button.link {
 }
 .logo { display: block; }
 .top .muted { white-space: nowrap; }
+/* Find, at the top right, for every tab. */
+.find-all { flex: 0 1 260px; min-width: 120px; }
+.find-all input { width: 100%; height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 15px; background: var(--bg); color: var(--text); font: inherit; }
+.find-all input:focus { outline: 2px solid var(--focus); outline-offset: -1px; border-color: transparent; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 .banner {
   flex: none;
@@ -206,7 +213,6 @@ button.link {
 
 .cells { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0 1px; }
 .cell { position: relative; display: grid; flex: 0 1 190px; min-width: 120px; }
-.cell.find { flex-basis: 320px; }
 .cell-head { background: var(--head); font-weight: 700; padding: 3px 8px; line-height: 18px; }
 .cell select, .cell input {
   height: 26px;
@@ -265,8 +271,10 @@ button.link {
 .sheet th:first-child, .sheet td:first-child { border-left: 1px solid var(--grid); }
 .sheet .num, .sheet .day { text-align: right; font-variant-numeric: tabular-nums; }
 
-.sheet tr.rec { cursor: pointer; }
+/* A row opens on a second click, so a phone mustn't take a double tap on it for zooming in. */
+.sheet tr.rec { cursor: pointer; touch-action: manipulation; }
 .sheet tr.rec:hover > * { background-image: linear-gradient(var(--hover), var(--hover)); }
+.sheet tr.rec.picked > * { background-image: linear-gradient(var(--picked), var(--picked)); }
 .sheet tr.empty td { padding: 12px 8px; }
 
 /* The genre's colour from the sheet. Unknown genres get a red outline instead. */
@@ -386,10 +394,12 @@ button.link {
   .top { padding: 6px 10px; gap: 8px; }
   .top .logo { width: 20px; height: 20px; }
   .top h1 { font-size: 16px; }
+  /* Find takes the room the counts had: each tab says its own count above its rows. */
+  .top #counts, .top .spacer { display: none; }
+  .find-all { flex: 1 1 auto; min-width: 0; }
   .frozen { padding: 8px 10px; }
   .sheet-title { font-size: 18px; margin-bottom: 6px; }
   .cell { flex: 1 1 0; min-width: 0; }
-  .cell.find { flex: 1 1 100%; margin-bottom: 1px; }
   .cells .count { flex: 1 1 100%; padding: 4px 0 0; }
 
   .tabs { padding-left: 0; padding-right: 0; gap: 0; }

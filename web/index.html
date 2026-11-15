@@ -28,6 +28,8 @@
       <h1>xrninsta</h1>
       <span class="muted" id="counts"></span>
       <span class="spacer"></span>
+      <!-- Find, for every tab: the Dashboard's artists, Songs and OnHold. / or Ctrl+F comes here. -->
+      <label class="find-all"><span class="visually-hidden">Find</span><input id="find" type="search" placeholder="Find a song or artist" autocomplete="off" title="Find in this tab (/ or Ctrl+F)"></label>
       <button id="signout" class="quiet small">Sign out</button>
     </header>
     <p class="banner" id="bot" hidden></p>
@@ -61,13 +63,12 @@
       <section id="tab-songs" class="tab" role="tabpanel" aria-labelledby="tab-btn-songs" hidden>
         <div class="frozen">
           <div class="cells">
-            <label class="cell find"><span class="cell-head">Find</span><input id="song-filter" type="search" placeholder="Title or artist" autocomplete="off"></label>
             <label class="cell pick"><span class="cell-head">Genre Filter</span><select id="song-genre"></select></label>
             <label class="cell pick"><span class="cell-head">Sort Day</span><select id="song-sort">
               <option value="new">Newest first</option>
               <option value="old">Oldest first</option>
             </select></label>
-            <p class="count muted"><span id="song-count"></span><span class="touch-hint"> · tap a row to fix it</span></p>
+            <p class="count muted"><span id="song-count"></span><span class="touch-hint"> · double-tap a row to fix it</span></p>
           </div>
         </div>
         <div class="scroll">
@@ -94,7 +95,7 @@
       </section>
 
       <section id="tab-holds" class="tab" role="tabpanel" aria-labelledby="tab-btn-holds" hidden>
-        <div class="frozen slim"><p class="count muted"><span id="hold-count"></span><span class="touch-hint"> · tap a row to fix it</span></p></div>
+        <div class="frozen slim"><p class="count muted"><span id="hold-count"></span><span class="touch-hint"> · double-tap a row to fix it</span></p></div>
         <div class="scroll">
           <table class="sheet holds">
             <colgroup><col><col><col class="c-note"><col class="c-act"></colgroup>

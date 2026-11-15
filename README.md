@@ -22,11 +22,15 @@ word in Vietnamese, with the songs in an SQLite file on the home server and noth
   fills (green headers, yellow cells to change, pink artist rows, each title in its genre's
   colour) and the same columns, full width, with the top rows frozen while the rest scrolls:
   - Dashboard: Genre Filter and Sort Day, each artist's songs under their name, and the Summary,
-    Artist and Genre counts beside them. Click a song to fix it in Songs.
-  - Songs: Title, Artist(s), Day No and Genre, with Find, a genre filter and Sort Day (newest
-    first, or oldest first as the sheet had them). The yellow row under the header adds a song;
-    click a row to fix or delete it.
+    Artist and Genre counts beside them. Double-click a song to fix it in Songs.
+  - Songs: Title, Artist(s), Day No and Genre, with a genre filter and Sort Day (newest first, or
+    oldest first as the sheet had them). The yellow row under the header adds a song;
+    double-click a row (double-tap on a phone) to fix or delete it, or press its Fix.
   - OnHold: Title, Artist(s) and Note, with a row to add to, and Add as a song, Fix and Delete.
+
+  One click on a row only picks it out, so reading down a list doesn't open a form in it. **Find**,
+  at the top right (or `/`, or Ctrl+F), narrows whichever tab is shown: the Dashboard's artists and
+  its counts, Songs by title or artist, and OnHold by title, artist or note, whatever the accents.
 
   It's at `/xrninsta`, for the server's owner, signed in with the sync password. On a phone the
   tables fit the screen: the rows wrap, the Note column folds under the title, and the rows to add

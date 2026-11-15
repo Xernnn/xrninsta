@@ -1,0 +1,194 @@
+/* xrninsta: the family's colours (xrnhub, xrnloops' web app) over the sheet's layout.
+   No inline styles: the CSP forbids them, so the script sets each genre's colour through CSSOM. */
+
+:root {
+  --bg: #f2f2f4;
+  --surface: #ffffff;
+  --surface-2: #ebebef;
+  --line: #e3e3e8;
+  --outline: #c9c9cf;
+  --text: #1b1b1e;
+  --muted: #6b6b73;
+  --accent: #16a34a;
+  --on-accent: #ffffff;
+  --danger: #dc2626;
+  --warn: #a16207;
+  --warn-bg: #fef3c7;
+  /* The sheet's genre colours are pale in both themes, so what sits on them is always dark. */
+  --on-genre: #1b1b1e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f1f23;
+    --surface: #2b2b30;
+    --surface-2: #3a3a40;
+    --line: #37373c;
+    --outline: #55555c;
+    --text: #f4f4f5;
+    --muted: #aaaaac;
+    --accent: #22c55e;
+    --on-accent: #0b2a16;
+    --danger: #f04242;
+    --warn: #ffd60a;
+    --warn-bg: #3d3412;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 15px/1.45 system-ui, sans-serif;
+}
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; margin: 0; }
+h3 { font-size: 14px; margin: 0 0 6px; }
+
+.muted { color: var(--muted); }
+.error { color: var(--danger); margin: 0; }
+.spacer { flex: 1; }
+
+input, select, textarea {
+  background: var(--surface);
+  border: 1px solid var(--outline);
+  border-radius: 8px;
+  padding: 7px 10px;
+  min-width: 0;
+}
+
+button.primary, button.quiet, button.danger {
+  border-radius: 8px;
+  padding: 7px 14px;
+  border: 1px solid transparent;
+  font-weight: 600;
+}
+button.primary { background: var(--accent); color: var(--on-accent); }
+button.quiet { background: var(--surface-2); border-color: var(--line); }
+button.danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+
+/* ---- signing in ---- */
+
+.signin {
+  max-width: 340px;
+  margin: 12vh auto;
+  padding: 0 16px;
+  display: grid;
+  gap: 12px;
+}
+.signin label { display: grid; gap: 4px; }
+
+/* ---- the frame ---- */
+
+#app { max-width: 1100px; margin: 0 auto; padding: 16px 16px 48px; }
+
+.top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+
+.banner {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin: 12px 0 0;
+}
+
+.tabs { display: flex; gap: 4px; margin: 16px 0; border-bottom: 1px solid var(--line); }
+.tabs button {
+  background: none;
+  border: none;
+  padding: 8px 14px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-weight: 600;
+}
+.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+
+.controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.controls label { display: flex; gap: 6px; align-items: center; color: var(--muted); }
+#song-filter { flex: 1; min-width: 180px; }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+
+/* ---- by artist ---- */
+
+.board { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+.artists { display: grid; gap: 10px; }
+.group { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.tinted {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  background: var(--genre, var(--surface-2));
+  color: var(--on-genre);
+  border-radius: 6px;
+  padding: 3px 8px;
+}
+.day { font-weight: 600; white-space: nowrap; color: inherit; opacity: 0.75; }
+
+.summary { display: grid; gap: 12px; position: sticky; top: 12px; }
+.summary table { width: 100%; border-collapse: collapse; }
+.summary th { text-align: left; font-weight: 400; padding: 3px 0; }
+.summary td { text-align: right; font-weight: 600; padding: 3px 0; }
+.summary tr + tr { border-top: 1px solid var(--line); }
+
+.chip {
+  display: inline-block;
+  background: var(--genre, var(--surface-2));
+  color: var(--on-genre);
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.chip.odd { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+
+/* ---- songs and holds ---- */
+
+.add { display: grid; grid-template-columns: 2fr 2fr 1fr 1fr auto; gap: 8px; align-items: center; margin-bottom: 16px; }
+.add h2 { grid-column: 1 / -1; }
+#add-hold.add { grid-template-columns: 2fr 2fr 2fr auto; }
+
+.list { display: grid; gap: 6px; }
+.row {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+.row:hover { border-color: var(--outline); }
+.row .day { color: var(--muted); opacity: 1; }
+.what { display: grid; min-width: 0; }
+.what > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.edit { display: grid; gap: 10px; }
+.edit label { display: grid; gap: 4px; color: var(--muted); }
+.edit label > * { color: var(--text); }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.hold { display: grid; gap: 4px; }
+.note { margin: 2px 0 6px; white-space: pre-wrap; }
+
+@media (max-width: 760px) {
+  .board { grid-template-columns: 1fr; }
+  .summary { position: static; order: -1; grid-template-columns: 1fr 1fr; }
+  .summary .card:first-child { grid-column: 1 / -1; }
+  .add, #add-hold.add { grid-template-columns: 1fr 1fr; }
+  .add input[name="title"], .add input[name="artists"], #add-hold input { grid-column: 1 / -1; }
+  .row { grid-template-columns: 56px minmax(0, 1fr) auto; }
+}

@@ -1,0 +1,5 @@
+# Exports of the Google Sheet hold the real songs: data, not code.
+*.xlsx
+*.csv
+__pycache__/
+/data/

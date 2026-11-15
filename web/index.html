@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- The proxy may strip the mount path, so relative URLs hang off this. -->
+  <base href="/xrninsta/">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>xrninsta</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <form id="signin" class="signin" hidden>
+    <h1>xrninsta</h1>
+    <p class="muted">Sign in with the home server's sync password.</p>
+    <label>Name <input name="user" autocomplete="username" required></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary">Sign in</button>
+    <p class="error" id="signin-error" hidden></p>
+  </form>
+
+  <div id="app" hidden>
+    <header class="top">
+      <h1>xrninsta</h1>
+      <span class="muted" id="counts"></span>
+      <span class="spacer"></span>
+      <button id="signout" class="quiet">Sign out</button>
+    </header>
+    <p class="banner" id="bot" hidden></p>
+
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="artists" aria-selected="true">By artist</button>
+      <button role="tab" data-tab="songs" aria-selected="false">Songs</button>
+      <button role="tab" data-tab="holds" aria-selected="false">OnHold</button>
+    </nav>
+
+    <section id="tab-artists" class="tab">
+      <div class="controls">
+        <label>Genre <select id="artist-genre"></select></label>
+        <label>Day <select id="artist-sort">
+          <option value="new">Newest first</option>
+          <option value="old">Oldest first</option>
+        </select></label>
+      </div>
+      <div class="board">
+        <div id="artists" class="artists"></div>
+        <aside id="summary" class="summary"></aside>
+      </div>
+    </section>
+
+    <section id="tab-songs" class="tab" hidden>
+      <form id="add-song" class="card add">
+        <h2>Add a song</h2>
+        <input name="title" placeholder="Title" required maxlength="200">
+        <input name="artists" placeholder="Artist(s), separated by commas" required maxlength="300">
+        <select name="genre" required></select>
+        <input name="day" type="number" placeholder="Day" step="1">
+        <button class="primary">Add</button>
+      </form>
+      <div class="controls">
+        <input id="song-filter" type="search" placeholder="Find a title or artist">
+        <select id="song-genre"></select>
+      </div>
+      <p class="muted" id="song-count"></p>
+      <div id="songs" class="list"></div>
+    </section>
+
+    <section id="tab-holds" class="tab" hidden>
+      <form id="add-hold" class="card add">
+        <h2>Put a song on hold</h2>
+        <input name="title" placeholder="Title" required maxlength="200">
+        <input name="artists" placeholder="Artist(s), if known" maxlength="300">
+        <input name="note" placeholder="Note" maxlength="1000">
+        <button class="primary">Hold</button>
+      </form>
+      <div id="holds" class="list"></div>
+    </section>
+  </div>
+</body>
+</html>

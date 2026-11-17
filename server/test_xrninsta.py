@@ -259,6 +259,25 @@ class Guarding(Base):
         self.assertEqual(self.titles(), [])
         self.assertEqual(self.tg.calls, [])
 
+    def test_no_chat_in_bot_json_answers_no_one(self):
+        # An empty "chat" (Enter at the setup prompt, or the key lost) once let anyone add, list and delete.
+        self.bot = x.Bot(self.store, self.tg, "")
+        with mock.patch.object(x, "log") as logged:
+            self.say("Sneaky\nSomeone\nvpop", chat="999")
+            self.tap("stats_genre", chat="999")
+        self.assertEqual(self.titles(), [])
+        self.assertEqual(self.tg.calls, [])
+        lines = [c.args[0] for c in logged.call_args_list]
+        self.assertEqual(len(lines), 2)
+        self.assertIn('no "chat"', lines[0])
+        self.assertIn("999", lines[0])
+        self.assertNotIn("Sneaky", " ".join(lines))  # what was sent stays out of the log
+
+    def test_the_status_says_when_no_chat_is_set(self):
+        poller = x.Poller(self.store, x.Bot(self.store, self.tg, " "))
+        poller.once()
+        self.assertEqual(poller.status["state"], "nochat")
+
     def test_a_crash_is_reported_in_the_chat(self):
         with mock.patch.object(self.bot, "try_add", side_effect=RuntimeError("boom")):
             self.say("A\nB\nvpop")

@@ -48,8 +48,12 @@ word in Vietnamese, with the songs in an SQLite file on the home server and noth
    ```sh
    ssh -t homeserver 'mkdir -p ~/.config/xrninsta && umask 077 &&
      read -rsp "Bot token: " t && echo && read -rp "Chat id: " c &&
+     case $c in ""|*[!0-9-]*) echo "The chat id is a number; nothing was written." >&2; exit 1;; esac &&
      printf "{\"token\": \"%s\", \"chat\": \"%s\"}\n" "$t" "$c" > ~/.config/xrninsta/bot.json'
    ```
+
+   The bot answers only that chat. Without one it answers no one, and its log names each chat it
+   ignored.
 
 2. Install it: `server/deploy.sh`. It ends with `check`, which names the bot and says Telegram
    still sends its messages to the Apps Script. Nothing has moved yet.

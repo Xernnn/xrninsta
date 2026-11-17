@@ -8,6 +8,7 @@ const CLIENT = { 'X-Xrn-Client': 'xrninsta' };
 const BOT_WORDS = {
   webhook: "The bot isn't taking messages yet: Telegram still sends them to the Apps Script. Run webhook-off on the server to move them here.",
   off: 'The bot has no token yet, so only this page is running.',
+  nochat: 'The bot answers no one: bot.json has no chat.',
   unreachable: "The bot can't reach Telegram at the moment. It keeps trying.",
   refused: 'Telegram refused the bot',
   error: 'The bot ran into a problem',

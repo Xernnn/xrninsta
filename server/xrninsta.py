@@ -28,7 +28,7 @@ the shared sign-in cookie with an X-Xrn-Client header. Any other path serves web
     python3 xrninsta.py webhook-off --config ~/.config/xrninsta/bot.json
 
 bot.json is {"token": "<from BotFather>", "chat": "<the one chat it answers>"}, readable only by
-you. `check` says which bot the token is and where Telegram sends its messages now. `webhook-off`
+you; with no chat the bot answers none, and logs each update it ignores. `check` says which bot the token is and where Telegram sends its messages now. `webhook-off`
 is the switch from Apps Script: it stops Telegram posting to the script, so the messages come here.
 """
 import argparse
@@ -440,12 +440,21 @@ class Bot:
 
     # -- one update --
 
+    def refused(self, chat, update):
+        """Whether [chat] isn't the one the bot answers. With no chat in bot.json it answers none:
+        an empty one used to mean anyone who found the bot could read, add and delete."""
+        if chat and chat == self.allowed:
+            return False
+        if not self.allowed:
+            log(f'update {update.get("update_id")} from chat {chat or "?"} ignored: no "chat" in bot.json')
+        return True
+
     def handle(self, update):
         try:
             if update.get("callback_query"):
                 cb = update["callback_query"]
                 chat = str(((cb.get("message") or {}).get("chat") or {}).get("id", ""))
-                if not chat or (self.allowed and chat != self.allowed):
+                if self.refused(chat, update):
                     return
                 # Always answer, or the tapped button keeps spinning.
                 toast = ""
@@ -456,7 +465,7 @@ class Bot:
             elif (update.get("message") or {}).get("text"):
                 msg = update["message"]
                 chat = str(msg["chat"]["id"])
-                if self.allowed and chat != self.allowed:
+                if self.refused(chat, update):
                     return
                 self.on_message(chat, msg)
         except Exception as err:  # noqa: BLE001 - as the script did: say so in the chat, keep going
@@ -466,7 +475,7 @@ class Bot:
                 chat = str(update["message"]["chat"]["id"])
             elif update.get("callback_query"):
                 chat = str(((update["callback_query"].get("message") or {}).get("chat") or {}).get("id", "")) or None
-            if chat and (not self.allowed or chat == self.allowed):
+            if chat and chat == self.allowed:
                 self.tg.call("sendMessage", {"chat_id": chat, "text": f"❌ CRASH LOG:\n{type(err).__name__}: {err}"})
 
     def on_message(self, chat, message):
@@ -1006,7 +1015,10 @@ class Poller:
             self.note("refused", f"{code}: {said}")
             return 300 if code in (401, 404) else 30
         self.status["lastPoll"] = now_ms()
-        self.note("ok")
+        if self.bot.allowed:
+            self.note("ok")
+        else:
+            self.note("nochat", 'no "chat" in bot.json, so it answers no one')
         for update in r.get("result") or []:
             uid = update.get("update_id")
             if isinstance(uid, int) and uid >= offset:
@@ -1601,7 +1613,7 @@ def main(argv=None):
             if not me.get("ok"):
                 raise SystemExit(f"Telegram refused the token: {me.get('description', 'no answer')}")
             url = (hook.get("url") or "").partition("?")[0]  # the rest is the script's key
-            who = chat or 'anyone (set "chat" to limit it)'
+            who = chat or 'no one (set "chat" in bot.json)'
             print(f"Bot: @{me['result'].get('username')} · answers {who}")
             if url:
                 print(f"Messages go to: {url} (the Apps Script) · {hook.get('pending_update_count', 0)} waiting")

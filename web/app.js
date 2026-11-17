@@ -1,7 +1,7 @@
 // xrninsta's page: the sheet's Dashboard, its Songs and its OnHold, on the home server.
 // Everything a person typed goes in through textContent: the host is shared with other apps' pages.
 
-import { dashboard, holdList, secondClick, songList } from './model.js';
+import { dashboard, failLabel, holdList, secondClick, songList } from './model.js';
 
 const $ = (sel) => document.querySelector(sel);
 const CLIENT = { 'X-Xrn-Client': 'xrninsta' };
@@ -118,11 +118,26 @@ document.addEventListener('keydown', (e) => {
 
 // ---- signing in --------------------------------------------------------------------------------
 
-function showSignin() {
+function showSignin(label) {
   $('#app').hidden = true;
+  $('#failed').hidden = true;
   $('#signin').hidden = false;
+  $('#signin-error').textContent = label || '';
+  $('#signin-error').hidden = !label;
   $('#signin [name=user]').focus();
 }
+
+// A load that failed, for any reason but a missing sign-in: both sections started hidden, so the
+// page used to stay blank behind an alert, with no way back but reloading it.
+function showFailure(err) {
+  if (err.status === 403) { showSignin(failLabel(403)); return; }
+  $('#app').hidden = true;
+  $('#signin').hidden = true;
+  $('#failed-label').textContent = failLabel(err.status);
+  $('#failed').hidden = false;
+}
+
+$('#retry').addEventListener('click', () => load());
 
 $('#signin').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -136,7 +151,7 @@ $('#signin').addEventListener('submit', async (e) => {
     form.password.value = '';
     await load();
   } catch (err) {
-    error.textContent = err.status === 401 ? "That name and password don't match." : err.status === 403 ? 'These songs belong to the server owner.' : err.message;
+    error.textContent = failLabel(err.status);
     error.hidden = false;
   }
 });
@@ -152,10 +167,11 @@ async function load() {
   try {
     data = await api('api/data');
   } catch (err) {
-    if (!(err instanceof Stop)) alert(err.message);
+    if (!(err instanceof Stop)) showFailure(err);
     return;
   }
   $('#signin').hidden = true;
+  $('#failed').hidden = true;
   $('#app').hidden = false;
   if (!$('#artist-genre').options.length) {
     genreSelect($('#artist-genre'), { all: true });

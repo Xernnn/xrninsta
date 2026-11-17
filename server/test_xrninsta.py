@@ -151,6 +151,16 @@ class Adding(Base):
         self.assertEqual(self.titles(), [])
         self.assertIn("Không có lệnh này", self.tg.last_text())
 
+    def test_a_command_that_only_starts_like_a_real_one_is_unknown(self):
+        # "/adds Em" passed startswith("/add"), missed the ^/add\b strip, and became a title.
+        for text in ("/adds Em", "/holdx Rain", "/searching day 2", "/statsx", "/cancelled"):
+            self.say(text)
+            self.assertIn("Không có lệnh này", self.tg.last_text(), text)
+        self.assertEqual((self.titles(), self.store.holds(), self.store.get_state(str(USER))), ([], [], None))
+        self.say("/ADD Night Bus\nAlex Example\nvpop")  # a real one, any case
+        self.say("/Hold\nLater")
+        self.assertEqual((self.titles(), [h["title"] for h in self.store.holds()]), (["Night Bus"], ["Later"]))
+
     def test_html_in_a_title_is_escaped(self):
         self.say("<b>&Co</b>\nA & B\nmisc")
         self.assertIn("&lt;b&gt;&amp;Co&lt;/b&gt;", self.tg.last_text())

@@ -488,45 +488,45 @@ class Bot:
     def on_message(self, chat, message):
         # Only the bot's name that Telegram appends to commands in groups (/search@instasong_bot).
         text = re.sub(r"^(/\w+)@\w+", r"\1", message["text"].strip(), flags=re.ASCII)
-        lower = text.lower()
+        # The command as a whole word: "/adds Em" or "/holdx" is no /add or /hold, but a mistyped
+        # command, which startswith() let through to be added or held under that name.
+        cmd = re.match(r"/(\w+)", text, flags=re.ASCII)
+        command, rest = (cmd.group(1).lower(), text[cmd.end():].strip()) if cmd else (None, "")
         user = str(message["from"]["id"])
         state = self.store.get_state(user)
 
-        if lower.startswith("/start"):
+        if command == "start":
             self.store.clear_state(user)
             self.send(chat, "Chào bạn! 🎵\nGửi tên bài hát bất kỳ để thêm (Tên ⏎ Artist ⏎ Genre), hoặc dùng lệnh:\n\n"
                             "/add — thêm bài mới\n/hold — đưa bài vào OnHold\n/search — tìm theo tên, artist, genre hoặc \"day 26\"\n"
                             "/stats — thống kê & quản lý OnHold\n/cancel — huỷ thao tác đang dở")
             return
-        if lower.startswith("/cancel"):
+        if command == "cancel":
             self.store.clear_state(user)
             self.send(chat, "❌ Đã huỷ tác vụ.")
             return
-        if lower.startswith("/search"):
+        if command == "search":
             self.store.clear_state(user)
-            q = re.sub(r"^/search\b", "", text, flags=re.I | re.ASCII).strip()
-            if q:
-                self.search(chat, q, 0)
+            if rest:
+                self.search(chat, rest, 0)
             else:
                 self.store.set_state(user, {"step": "await_search"})
                 self.send(chat, "🔍 Nhập tên bài hát hoặc tên artist để tìm:")
             return
-        if lower.startswith("/stats"):
+        if command == "stats":
             self.store.clear_state(user)
             self.send_inline(chat, self.stats_header(), stats_menu())
             return
-        if lower.startswith("/add"):
+        if command == "add":
             self.store.clear_state(user)
-            rest = re.sub(r"^/add\b", "", text, flags=re.I | re.ASCII).strip()
             if rest:
                 self.add_input(chat, user, rest)
             else:
                 self.send(chat, "➕ Nhập thông tin bài hát.\n\nCó thể nhập 1, 2 hoặc 3 dòng:\n• Tên bài\n• Artist(s)\n• Genre\n\n"
                                 "Mẹo: gửi luôn /add kèm các dòng trên để thêm nhanh.")
             return
-        if lower.startswith("/hold"):
+        if command == "hold":
             self.store.clear_state(user)
-            rest = re.sub(r"^/hold\b", "", text, flags=re.I | re.ASCII).strip()
             if rest:
                 self.hold_input(chat, user, rest)
             else:

@@ -390,15 +390,22 @@ class Telegram:
                                      headers={"Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read())
+                answer = json.loads(r.read())
         except urllib.error.HTTPError as e:
             try:
-                return json.loads(e.read())
+                answer = json.loads(e.read())
             except ValueError:
-                return {"ok": False, "error_code": e.code, "description": str(e)}
+                answer = {"ok": False, "error_code": e.code, "description": str(e)}
         except (OSError, ValueError) as e:
             log(f"telegram {method}: {type(e).__name__}: {e}")
             return None
+        if not isinstance(answer, dict):
+            answer = {"ok": False, "description": "not a JSON object"}
+        # A refused send left no trace: a reply over the length limit, or a rate limit (429), and
+        # the chat simply heard nothing. getUpdates' refusals are the poller's to report, once each.
+        if not answer.get("ok") and method != "getUpdates":
+            log(f"telegram {method} refused: {answer.get('error_code')}: {answer.get('description', '')}")
+        return answer
 
 
 def log(text):
@@ -543,6 +550,10 @@ class Bot:
                 self.search(chat, text, 0)
                 return
             if step == "await_artist":
+                refusal = too_long(artists=text)
+                if refusal:
+                    self.send(chat, refusal)
+                    return
                 state["artists"] = text
                 state["step"] = "await_genre"
                 self.store.set_state(user, state)
@@ -560,7 +571,10 @@ class Bot:
         title = lines[0] if lines else ""
         artists = lines[1] if len(lines) > 1 else ""
         genre = parse_genre(lines[2] if len(lines) > 2 else "")
-        if title and artists and genre:
+        refusal = too_long(title=title, artists=artists)
+        if refusal:
+            self.send(chat, refusal)
+        elif title and artists and genre:
             self.try_add(chat, user, title, artists, genre)
         elif title and artists:
             self.store.set_state(user, {"step": "await_genre", "title": title, "artists": artists})
@@ -723,7 +737,12 @@ class Bot:
         if not title:
             self.send(chat, "⚠️ Lỗi. Gửi tên bài để đưa vào OnHold.")
             return
-        self.hold_song(chat, user, title, lines[1] if len(lines) > 1 else "", lines[2] if len(lines) > 2 else "")
+        artists, note = lines[1] if len(lines) > 1 else "", lines[2] if len(lines) > 2 else ""
+        refusal = too_long(title=title, artists=artists, note=note)
+        if refusal:
+            self.send(chat, refusal)
+            return
+        self.hold_song(chat, user, title, artists, note)
 
     def hold_song(self, chat, user, title, artists, note, force=False):
         conflict = None if force else find_hold_conflict(title, artists, self.store.songs(), self.store.holds())
@@ -879,6 +898,16 @@ def collation(s):
 
 def rows_of_three(buttons):
     return [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+
+
+def too_long(title="", artists="", note=""):
+    """The bot's answer to a line longer than the page lets a record have, or None. Kept, it was a
+    song the page's Fix couldn't save, and the reply naming it could pass Telegram's 4,096
+    characters and be refused, so the chat heard nothing."""
+    for value, label, most in ((title, "Tên bài", MAX_TITLE), (artists, "Artist", MAX_ARTISTS), (note, "Ghi chú", MAX_NOTE)):
+        if len(value) > most:
+            return f"⚠️ {label} dài hơn {most} ký tự."
+    return None
 
 
 def stats_menu():

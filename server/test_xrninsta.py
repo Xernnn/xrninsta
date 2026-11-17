@@ -153,6 +153,47 @@ class Adding(Base):
         self.say("<b>&Co</b>\nA & B\nmisc")
         self.assertIn("&lt;b&gt;&amp;Co&lt;/b&gt;", self.tg.last_text())
 
+    def test_a_line_longer_than_the_page_takes_is_refused(self):
+        # A pasted paragraph became a title the page's Fix couldn't save, and its reply passed
+        # Telegram's limit, so nothing was said at all.
+        self.say("x" * 201 + "\nSomeone\nvpop")
+        self.assertEqual(self.titles(), [])
+        self.assertEqual(self.tg.last_text(), f"⚠️ Tên bài dài hơn {x.MAX_TITLE} ký tự.")
+        self.say("Fine\n" + "a" * 301)
+        self.assertIn(f"Artist dài hơn {x.MAX_ARTISTS}", self.tg.last_text())
+        self.assertIsNone(self.store.get_state(str(USER)))
+        self.say("Lonely Title")
+        self.say("a" * 301)  # the answer to "Artist(s)?"
+        self.assertIn(f"Artist dài hơn {x.MAX_ARTISTS}", self.tg.last_text())
+        self.assertEqual(self.store.get_state(str(USER))["step"], "await_artist")
+        self.say("/cancel")
+        self.say("x" * 200 + "\nSomeone\nvpop")
+        self.assertEqual(self.titles(), ["x" * 200])
+
+    def test_a_hold_longer_than_the_page_takes_is_refused(self):
+        self.say("/hold Later\nSomeone\n" + "n" * 1001)
+        self.assertEqual(self.store.holds(), [])
+        self.assertEqual(self.tg.last_text(), f"⚠️ Ghi chú dài hơn {x.MAX_NOTE} ký tự.")
+
+
+class TelegramAnswers(unittest.TestCase):
+    def refusal(self, method):
+        body = json.dumps({"ok": False, "error_code": 400, "description": "Bad Request: message is too long"}).encode()
+        err = x.urllib.error.HTTPError("https://api.telegram.org/", 400, "Bad Request", {}, None)
+        err.read = lambda: body
+        with mock.patch.object(x.urllib.request, "urlopen", side_effect=err), mock.patch.object(x, "log") as logged:
+            answer = x.Telegram("token").call(method, {"chat_id": 1, "text": "hi"})
+        return answer, [c.args[0] for c in logged.call_args_list]
+
+    def test_a_refusal_is_logged_with_the_method_and_why(self):
+        answer, lines = self.refusal("sendMessage")
+        self.assertFalse(answer["ok"])
+        self.assertEqual(lines, ["telegram sendMessage refused: 400: Bad Request: message is too long"])
+
+    def test_a_refused_poll_is_left_to_the_poller(self):
+        # The poller notes it once per change; logging every 30 s retry would bury everything else.
+        self.assertEqual(self.refusal("getUpdates")[1], [])
+
 
 class Holding(Base):
     def test_hold_then_add_it_and_clear_only_the_closest_hold(self):

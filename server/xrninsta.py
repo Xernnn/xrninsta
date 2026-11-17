@@ -1172,7 +1172,9 @@ class Login:
         self.session_key = load_session_key(os.path.join(os.path.dirname(users_path), "session.key"))
         self.cache = {}
         self.fail_lock = threading.Lock()
-        self.failures = {}
+        self.fail_settled = threading.Condition(self.fail_lock)  # a login being checked has been settled
+        self.failures = {}  # address -> [(monotonic time, name tried)] of its recent wrong logins
+        self.checking = {}  # address -> how many of its logins are being checked right now
 
     def names(self):
         found = []
@@ -1192,34 +1194,84 @@ class Login:
         except OSError:
             return 0
 
+    def recent_failures(self, addr, now):
+        """This address's wrong logins within FAIL_WINDOW_S; older ones are forgotten. Under fail_lock."""
+        recent = [f for f in self.failures.get(addr, ()) if now - f[0] < FAIL_WINDOW_S]
+        if recent:
+            self.failures[addr] = recent
+        else:
+            self.failures.pop(addr, None)
+        return recent
+
     def reserve_guess(self, addr):
-        """Counts a password as wrong before it's checked, or guesses sent at once all pass while the
-        first are still in bcrypt. A right one clears the count."""
-        now = time.monotonic()
-        with self.fail_lock:
-            recent = [t for t in self.failures.get(addr, ()) if now - t < FAIL_WINDOW_S]
-            if len(recent) >= FAIL_LIMIT:
-                self.failures[addr] = recent
-                return False
-            self.failures[addr] = recent + [now]
-            return True
+        """Waits for a place to check a password from this address in; False once the address has
+        used up its wrong logins. A login being checked holds a place until settle_guess: counted only
+        afterwards, guesses sent at once all passed the check while the first were still in bcrypt.
+        It isn't a wrong login, though: one that finds no place waits for it to be settled rather than
+        being turned away, so two sign-ins at once never lock each other out."""
+        with self.fail_settled:
+            now = time.monotonic()
+            if len(self.failures) > 10000:  # a flood from many addresses: forget the stale ones
+                for a in [a for a, fs in self.failures.items() if now - fs[-1][0] >= FAIL_WINDOW_S]:
+                    del self.failures[a]
+            while True:
+                wrong = len(self.recent_failures(addr, time.monotonic()))
+                if wrong >= FAIL_LIMIT:
+                    return False
+                if wrong + self.checking.get(addr, 0) < FAIL_LIMIT:
+                    self.checking[addr] = self.checking.get(addr, 0) + 1
+                    return True
+                self.fail_settled.wait(1)
+
+    def settle_guess(self, addr, name, right):
+        """A login reserve_guess let through has been checked. A wrong one counts against the address,
+        under the name it tried. A right one clears that name's mistakes from this address, and no one
+        else's: a sign-in mustn't give a guesser behind the same address its guesses back. None, a
+        password already found right (cached_basic) or a check that broke, settles nothing."""
+        with self.fail_settled:
+            left = self.checking.get(addr, 1) - 1
+            if left > 0:
+                self.checking[addr] = left
+            else:
+                self.checking.pop(addr, None)
+            if right is False:
+                self.failures.setdefault(addr, []).append((time.monotonic(), name[:64]))
+            elif right:
+                kept = [f for f in self.failures.get(addr, ()) if f[1] != name[:64]]
+                if kept:
+                    self.failures[addr] = kept
+                else:
+                    self.failures.pop(addr, None)
+            self.fail_settled.notify_all()
 
     def locked_out(self, addr):
-        now = time.monotonic()
         with self.fail_lock:
-            return len([t for t in self.failures.get(addr, ()) if now - t < FAIL_WINDOW_S]) >= FAIL_LIMIT
+            return len(self.recent_failures(addr, time.monotonic())) >= FAIL_LIMIT
 
-    def note_success(self, addr):
-        with self.fail_lock:
-            self.failures.pop(addr, None)
-
-    def check_basic(self, header):
+    @staticmethod
+    def basic_login(header):
+        """(user, password) from `Authorization: Basic ...`, or None."""
         if not header or not header.startswith("Basic "):
             return None
         try:
             user, _, password = base64.b64decode(header[6:]).decode("utf-8").partition(":")
         except Exception:  # noqa: BLE001 - any bad header is no login
             return None
+        return user, password
+
+    def cached_basic(self, header):
+        """The user for a password already found right (the cache), else None: no check."""
+        login = self.basic_login(header)
+        if not login:
+            return None
+        hit = self.cache.get(hashlib.sha256(f"{login[0]}:{login[1]}".encode()).hexdigest())
+        return hit[0] if hit and hit[1] > time.time() and hit[2] == self.mtime() else None
+
+    def check_basic(self, header):
+        login = self.basic_login(header)
+        if not login:
+            return None
+        user, password = login
         key = hashlib.sha256(f"{user}:{password}".encode()).hexdigest()
         mtime = self.mtime()
         hit = self.cache.get(key)
@@ -1455,14 +1507,24 @@ class Handler(BaseHTTPRequestHandler):
                     time.sleep(FAIL_DELAY_S)
                 self.send(429, "too many wrong passwords; try again later", headers={"Retry-After": str(FAIL_WINDOW_S)})
                 return None
-            user = login.check_basic(header)
+            right = None
+            try:
+                # A password already found right is a session, not a login, and settles nothing: a
+                # browser or script sending it with every request cleared the count for its whole
+                # address, so a guesser behind the same one never ran out of guesses.
+                user = login.cached_basic(header)
+                if not user:
+                    user = login.check_basic(header)
+                    right = user is not None
+            finally:
+                if header:
+                    login.settle_guess(addr, (login.basic_login(header) or ("",))[0], right)
             if not user:
                 if header:
                     time.sleep(FAIL_DELAY_S)
                 challenge = {} if self.headers.get("X-Xrn-Client") else {"WWW-Authenticate": 'Basic realm="xrninsta"'}
                 self.send(401, "login required", headers=challenge)
                 return None
-            login.note_success(addr)
         if user != next(iter(login.names()), None):
             self.send(403, "these songs are the server owner's")
             return None

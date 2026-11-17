@@ -3,12 +3,14 @@
 Every song and name here is made up. Run: python3 -m unittest test_xrninsta (from server/).
 """
 import base64
+import concurrent.futures
 import http.client
 import json
 import os
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from http.server import ThreadingHTTPServer
@@ -519,6 +521,73 @@ class Page(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertEqual(self.store.holds(), [])
         self.assertEqual(self.call("POST", "/api/songs", {"title": "L", "artists": "S", "genre": "MISC", "fromHold": hold["id"]})[0], 400)
+
+    def guess_as(self, name, password, addr):
+        auth = "Basic " + base64.b64encode(f"{name}:{password}".encode()).decode()
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
+        c.request("GET", "/api/data", headers={"Authorization": auth, "X-Forwarded-For": addr})
+        r = c.getresponse()
+        r.read()
+        c.close()
+        return r.status
+
+    def test_a_right_login_clears_only_its_own_users_mistakes(self):
+        # A right login wiped the whole address's count: guesses at another name from the same
+        # address started over with every login of the first.
+        login, addr = x.Handler.app["login"], "203.0.113.80"
+        for _ in range(5):
+            self.assertEqual(401, self.guess_as("admin", "nope", addr))
+        for _ in range(4):
+            self.assertEqual(401, self.guess_as("owner", "nope", addr))
+        login.cache.clear()
+        self.assertEqual(200, self.guess_as("owner", "pw", addr))  # owner's four go, admin's five stay
+        for _ in range(x.FAIL_LIMIT - 5):
+            self.assertEqual(401, self.guess_as("admin", "nope", addr))
+        self.assertEqual(429, self.guess_as("admin", "nope", addr))
+
+    def test_a_password_already_found_right_clears_nothing(self):
+        # A browser or script at the same address as a guesser cleared the guesser's count with
+        # every request. A password the server already knows is right (its cache) is a session.
+        addr = "203.0.113.81"
+        self.assertEqual(200, self.guess_as("owner", "pw", addr))
+        for _ in range(x.FAIL_LIMIT - 1):
+            self.assertEqual(401, self.guess_as("owner", "nope", addr))
+            self.assertEqual(200, self.guess_as("owner", "pw", addr))
+        self.assertEqual(401, self.guess_as("owner", "nope", addr))
+        self.assertEqual(429, self.guess_as("owner", "nope", addr))
+
+    def test_a_login_in_flight_is_not_a_wrong_guess(self):
+        # Counted as wrong before it was checked, a right login being checked took a place: two
+        # sign-ins at once, at an address with a few mistakes behind it, got a 429.
+        login, addr = x.Handler.app["login"], "203.0.113.82"
+        real = login.check_basic
+
+        def slow(header):
+            time.sleep(0.3)
+            return real(header)
+
+        with mock.patch.object(x, "FAIL_LIMIT", 3):
+            self.assertEqual(401, self.guess_as("owner", "nope", addr))
+            self.assertEqual(401, self.guess_as("owner", "nope", addr))  # one place left
+            login.cache.clear()
+            start = threading.Barrier(2)
+
+            def sign_in(_):
+                start.wait()
+                return self.guess_as("owner", "pw", addr)
+
+            with mock.patch.object(login, "check_basic", slow), concurrent.futures.ThreadPoolExecutor(2) as pool:
+                self.assertEqual([200, 200], list(pool.map(sign_in, range(2))))
+
+    def test_addresses_whose_mistakes_are_old_are_forgotten(self):
+        # Each address that ever got a password wrong stayed in memory for good.
+        login = x.Handler.app["login"]
+        long_ago = time.monotonic() - x.FAIL_WINDOW_S - 1
+        for i in range(10001):
+            login.failures[f"198.51.{i // 256}.{i % 256}"] = [(long_ago, "owner")]
+        self.assertTrue(login.reserve_guess("203.0.113.90"))
+        login.settle_guess("203.0.113.90", "owner", False)
+        self.assertEqual(list(login.failures), ["203.0.113.90"])
 
     def test_a_write_from_another_sites_page_is_refused(self):
         status, _ = self.call("POST", "/api/holds", {"title": "x"}, headers={"Sec-Fetch-Site": "cross-site"})

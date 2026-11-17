@@ -343,8 +343,7 @@ button.link {
 
 .holds thead th { background: var(--input); }
 
-.note-under, .short, .opener, .touch-hint { display: none; }
-@media (hover: none) { .touch-hint { display: inline; } }
+.note-under, .short, .opener { display: none; }
 
 /* A row to type in: the next empty row under the header, and a row being fixed. Its fields line up
    with the columns above them, so it reads as editing the cells in place. */

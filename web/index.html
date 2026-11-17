@@ -15,7 +15,6 @@
   <form id="signin" class="signin" hidden>
     <img class="logo" src="icon.svg" alt="" width="40" height="40">
     <h1>xrninsta</h1>
-    <p class="muted">Sign in with the home server's sync password.</p>
     <label>Name <input name="user" autocomplete="username" required></label>
     <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
     <button class="primary">Sign in</button>
@@ -36,7 +35,7 @@
       <span class="muted" id="counts"></span>
       <span class="spacer"></span>
       <!-- Find, for every tab: the Dashboard's artists, Songs and OnHold. / or Ctrl+F comes here. -->
-      <label class="find-all"><span class="visually-hidden">Find</span><input id="find" type="search" placeholder="Find a song or artist" autocomplete="off" title="Find in this tab (/ or Ctrl+F)"></label>
+      <label class="find-all"><span class="visually-hidden">Find</span><input id="find" type="search" placeholder="Find" autocomplete="off" title="Find (/ or Ctrl+F)"></label>
       <button id="signout" class="quiet small">Sign out</button>
     </header>
     <p class="banner" id="bot" hidden></p>
@@ -75,7 +74,7 @@
               <option value="new">Newest first</option>
               <option value="old">Oldest first</option>
             </select></label>
-            <p class="count muted"><span id="song-count"></span><span class="touch-hint"> · double-tap a row to fix it</span></p>
+            <p class="count muted"><span id="song-count"></span></p>
           </div>
         </div>
         <div class="scroll">
@@ -88,8 +87,8 @@
               <tr><td colspan="5">
                 <button type="button" class="opener" aria-controls="add-song" aria-expanded="false">+ Add a song</button>
                 <form id="add-song" class="rowform" aria-label="Add a song">
-                  <label><span class="f-label">Title</span><input name="title" placeholder="Add a song: title" required maxlength="200"></label>
-                  <label><span class="f-label">Artist(s)</span><input name="artists" placeholder="Artist(s), separated by commas" required maxlength="300"></label>
+                  <label><span class="f-label">Title</span><input name="title" placeholder="Title" required maxlength="200"></label>
+                  <label><span class="f-label">Artist(s)</span><input name="artists" placeholder="Artist(s)" required maxlength="300"></label>
                   <label class="third"><span class="f-label">Day No</span><input name="day" type="number" step="1" inputmode="numeric"></label>
                   <label class="third"><span class="f-label">Genre</span><select name="genre" required></select></label>
                   <span class="go third"><button class="primary small">Add</button></span>
@@ -102,7 +101,7 @@
       </section>
 
       <section id="tab-holds" class="tab" role="tabpanel" aria-labelledby="tab-btn-holds" hidden>
-        <div class="frozen slim"><p class="count muted"><span id="hold-count"></span><span class="touch-hint"> · double-tap a row to fix it</span></p></div>
+        <div class="frozen slim"><p class="count muted"><span id="hold-count"></span></p></div>
         <div class="scroll">
           <table class="sheet holds">
             <colgroup><col><col><col class="c-note"><col class="c-act"></colgroup>
@@ -113,8 +112,8 @@
               <tr><td colspan="4">
                 <button type="button" class="opener" aria-controls="add-hold" aria-expanded="false">+ Put a song on hold</button>
                 <form id="add-hold" class="rowform" aria-label="Put a song on hold">
-                  <label><span class="f-label">Title</span><input name="title" placeholder="Put a song on hold: title" required maxlength="200"></label>
-                  <label class="third"><span class="f-label">Artist(s)</span><input name="artists" placeholder="Artist(s), if known" maxlength="300"></label>
+                  <label><span class="f-label">Title</span><input name="title" placeholder="Title" required maxlength="200"></label>
+                  <label class="third"><span class="f-label">Artist(s)</span><input name="artists" placeholder="Artist(s)" maxlength="300"></label>
                   <label class="third"><span class="f-label">Note</span><input name="note" placeholder="Note" maxlength="1000"></label>
                   <span class="go third"><button class="primary small">Hold</button></span>
                 </form>

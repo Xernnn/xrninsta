@@ -6,13 +6,13 @@ import { dashboard, failLabel, holdList, secondClick, songList } from './model.j
 const $ = (sel) => document.querySelector(sel);
 const CLIENT = { 'X-Xrn-Client': 'xrninsta' };
 const BOT_WORDS = {
-  webhook: "The bot isn't taking messages yet: Telegram still sends them to the Apps Script. Run webhook-off on the server to move them here.",
-  off: 'The bot has no token yet, so only this page is running.',
-  nochat: 'The bot answers no one: bot.json has no chat.',
-  twice: 'Two copies of the bot are running on the server.',
-  unreachable: "The bot can't reach Telegram at the moment. It keeps trying.",
-  refused: 'Telegram refused the bot',
-  error: 'The bot ran into a problem',
+  webhook: 'Bot: messages still go to the Apps Script (run webhook-off)',
+  off: 'Bot off: no token in bot.json',
+  nochat: 'Bot off: no chat in bot.json',
+  twice: 'Bot: two copies running',
+  unreachable: "Bot: can't reach Telegram",
+  refused: 'Bot: Telegram refused it',
+  error: 'Bot error',
 };
 // A mouse and keyboard: put the cursor in a row that opens. On a phone that would pop the keyboard.
 const POINTER = matchMedia('(hover: hover) and (pointer: fine)');
@@ -180,7 +180,6 @@ async function load() {
   }
   const day = $('#add-song [name=day]');
   day.placeholder = String(data.nextDay);
-  day.title = `Leave it empty for the next day, ${data.nextDay}`;
   const valid = data.songs.filter((s) => data.genres.includes(s.genre)).length;
   $('#counts').textContent = `${valid} songs · ${data.holds.length} on hold`;
   render();
@@ -211,11 +210,11 @@ function renderArtists() {
   // filled with its genre's colour. A song double-clicked opens in Songs to be fixed.
   const table = $('#artists');
   for (const body of [...table.tBodies]) body.remove();
-  if (!board.artists.length) table.append(el('tbody', {}, emptyRow(3, 'No songs here.')));
+  if (!board.artists.length) table.append(el('tbody', {}, emptyRow(3, 'No songs')));
   for (const artist of board.artists) {
     table.append(el('tbody', { class: 'group' },
       el('tr', { class: 'artist' }, el('th', { colspan: 3, scope: 'rowgroup', text: `${artist.name} (${artist.songs.length})` })),
-      artist.songs.map((s) => el('tr', { class: 'rec', title: 'Double-click to fix it in Songs', onclick: opens(`board:${s.id}`, () => openSong(s.id)), onmousedown: keepWords },
+      artist.songs.map((s) => el('tr', { class: 'rec', onclick: opens(`board:${s.id}`, () => openSong(s.id)), onmousedown: keepWords },
         el('td', { class: 'indent' }),
         tint(el('td', { text: s.title }), s.genre),
         el('td', { class: 'day', text: `Day ${s.day}` }))),
@@ -266,7 +265,7 @@ function renderSongs() {
   $('#song-count').textContent = rows.length === data.songs.length ? `${rows.length} songs` : `${rows.length} of ${data.songs.length} songs`;
   $('#songs').replaceChildren(...(rows.length
     ? rows.map((s) => (open === `song:${s.id}` ? songForm(s) : songRow(s)))
-    : [emptyRow(5, 'No song matches.')]));
+    : [emptyRow(5, 'No songs')]));
 }
 
 function songRow(s) {
@@ -291,7 +290,7 @@ function songForm(s) {
     el('div', { class: 'actions' },
       el('button', { class: 'primary small', text: 'Save' }),
       el('button', { type: 'button', class: 'quiet small', text: 'Cancel', onclick: () => closeEditor() }),
-      data.genres.includes(s.genre) ? null : el('span', { class: 'error', text: `"${s.genre}" isn't a genre the bot knows; pick one to save.` }),
+      data.genres.includes(s.genre) ? null : el('span', { class: 'error', text: `Unknown genre "${s.genre}"` }),
       el('span', { class: 'spacer' }),
       el('button', { type: 'button', class: 'danger small', text: 'Delete', onclick: () => remove('songs', s, `Delete "${s.title}"?`) })));
   form.addEventListener('submit', (e) => {
@@ -358,7 +357,7 @@ function renderHolds() {
     if (open === `hold:${h.id}`) return holdForm(h);
     if (open === `promote:${h.id}`) return promoteForm(h);
     return holdRow(h);
-  }) : [emptyRow(4, n ? 'Nothing on hold matches.' : 'Nothing on hold.')]));
+  }) : [emptyRow(4, 'Nothing on hold')]));
 }
 
 function holdRow(h) {
@@ -400,7 +399,7 @@ function promoteForm(h) {
     field('Artist(s)', el('input', { name: 'artists', value: h.artists, required: true, maxlength: 300 })),
     el('span', { class: 'pair' },
       field('Genre', genre),
-      field('Day No', el('input', { name: 'day', type: 'number', step: 1, placeholder: String(data.nextDay), title: `Leave it empty for the next day, ${data.nextDay}`, inputmode: 'numeric' }))),
+      field('Day No', el('input', { name: 'day', type: 'number', step: 1, placeholder: String(data.nextDay), inputmode: 'numeric' }))),
     el('span', { class: 'go' },
       el('button', { class: 'primary small', text: 'Add to songs' }),
       el('button', { type: 'button', class: 'quiet small', text: 'Cancel', onclick: () => closeEditor() })));
@@ -445,11 +444,11 @@ async function send(path, opts, record) {
     if (err instanceof Stop) return false;
     if (err.status === 412 && record && err.doc && err.doc.current) {
       record.updated = err.doc.current.updated;
-      alert('Changed elsewhere since you opened it. Save again to keep yours.');
+      alert('Changed elsewhere. Save again to keep yours.');
       return false;
     }
-    if (err.status === 412) alert('That changed somewhere else since you opened it. Showing it as it is now.');
-    else if (err.status === 404) alert('That has gone: it was deleted somewhere else.');
+    if (err.status === 412) alert('Changed elsewhere');
+    else if (err.status === 404) alert('Deleted elsewhere');
     else { alert(err.message); return false; }
   }
   open = null;

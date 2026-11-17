@@ -62,6 +62,7 @@ DUP_TITLE_MIN, DUP_ARTIST_MIN = 0.90, 0.88
 ONHOLD_PER_PAGE = 8
 SEARCH_PER_PAGE = 5
 SEARCH_KEEP_S = 21600  # a search's pages turn for 6 hours after the last turn
+WAIT_KEEP_S = 3600  # a question waiting for typed text (an artist, a song to hold or find) lapses after an hour
 BACK_TO_STATS = {"text": "↩️ Quay lại", "callback_data": "stats_menu"}
 EXPIRED = "⌛ Phiên đã hết hạn, gửi lại bài nhé."
 BUSY = "⚠️ Hệ thống bận, vui lòng thử lại sau."
@@ -342,8 +343,11 @@ class Store:
             self.db.execute(f"DELETE FROM {table} WHERE id = ?", (rid,))
             return True
 
-    def get_state(self, user):
-        found = self.rows("SELECT state FROM chat_state WHERE user = ?", (user,))
+    def get_state(self, user, newer_than=None):
+        """The user's step in a conversation, or None; with [newer_than] (ms), None if it's older."""
+        found = self.rows("SELECT state, at FROM chat_state WHERE user = ?", (user,))
+        if found and newer_than is not None and found[0]["at"] < newer_than:
+            return None
         try:
             return json.loads(found[0]["state"]) if found else None
         except ValueError:
@@ -493,7 +497,9 @@ class Bot:
         cmd = re.match(r"/(\w+)", text, flags=re.ASCII)
         command, rest = (cmd.group(1).lower(), text[cmd.end():].strip()) if cmd else (None, "")
         user = str(message["from"]["id"])
-        state = self.store.get_state(user)
+        # Only a recent question takes typed text as its answer: days after "Artist(s)?" went
+        # unanswered, a whole new song became that old title's artist.
+        state = self.store.get_state(user, newer_than=now_ms() - WAIT_KEEP_S * 1000)
 
         if command == "start":
             self.store.clear_state(user)

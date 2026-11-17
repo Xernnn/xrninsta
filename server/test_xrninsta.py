@@ -109,6 +109,19 @@ class Adding(Base):
         self.tap("add_USUK")
         self.assertEqual(self.store.songs()[0]["artists"], "Some Singer")
 
+    def test_a_question_left_unanswered_for_an_hour_lapses(self):
+        # Days after "Artist(s)?" went unanswered, a whole new song became that old title's artist.
+        self.say("Lonely Title")
+        later = x.now_ms() + (x.WAIT_KEEP_S + 5) * 1000
+        with mock.patch.object(x, "now_ms", return_value=later):
+            self.say("Fresh Song\nSomeone\nvpop")
+        self.assertEqual(self.titles(), ["Fresh Song"])
+        self.store.clear_state(str(USER))
+        self.say("/hold")
+        with mock.patch.object(x, "now_ms", return_value=x.now_ms() + (x.WAIT_KEEP_S + 5) * 1000):
+            self.say("Another\nSomeone\nkpop")
+        self.assertEqual((self.titles()[-1], self.store.holds()), ("Another", []))
+
     def test_a_likely_duplicate_asks_first_and_can_be_added_anyway(self):
         self.song("Đường Về Nhà", "Ca Sĩ Mẫu")
         self.say("Duong ve nha\nca si mau\nvpop")

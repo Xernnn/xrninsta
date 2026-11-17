@@ -1037,9 +1037,15 @@ class Poller:
             return 15
         if not r.get("ok"):
             code, said = r.get("error_code"), r.get("description", "")
-            if code == 409:
+            # Telegram answers 409 both while a webhook is set and while another process polls with
+            # the same token (a copy left running under PID 1 after its supervisor died); only its
+            # description tells them apart, and webhook-off does nothing for the second.
+            if code == 409 and "webhook" in said.lower():
                 self.note("webhook", "Telegram still sends this bot's messages elsewhere (the Apps Script). "
                                      "Run `xrninsta.py webhook-off` to move them here.")
+                return 30
+            if code == 409:
+                self.note("twice", f"another copy of the bot is taking its messages; stop the old process ({said})")
                 return 30
             self.note("refused", f"{code}: {said}")
             return 300 if code in (401, 404) else 30

@@ -350,10 +350,20 @@ class Polling(Base):
 
     def test_a_webhook_still_set_is_said_plainly(self):
         poller = x.Poller(self.store, self.bot)
-        self.tg.updates = [{"ok": False, "error_code": 409, "description": "Conflict"}]
+        self.tg.updates = [{"ok": False, "error_code": 409, "description": "Conflict: can't use getUpdates method while "
+                                                                             "webhook is active; use deleteWebhook to delete the webhook first"}]
         self.assertEqual(poller.once(), 30)
         self.assertEqual(poller.status["state"], "webhook")
         self.assertIn("webhook-off", poller.status["error"])
+
+    def test_a_second_copy_of_the_bot_is_not_taken_for_the_webhook(self):
+        # Telegram answers 409 to both; a copy left running under PID 1 was told to run webhook-off.
+        poller = x.Poller(self.store, self.bot)
+        self.tg.updates = [{"ok": False, "error_code": 409, "description": "Conflict: terminated by other getUpdates "
+                                                                             "request; make sure that only one bot instance is running"}]
+        self.assertEqual(poller.once(), 30)
+        self.assertEqual(poller.status["state"], "twice")
+        self.assertNotIn("webhook", poller.status["error"])
 
 
 def write_xlsx(path, sheets):

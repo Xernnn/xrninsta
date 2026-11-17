@@ -542,6 +542,7 @@ class Page(unittest.TestCase):
         c.request(method, path, body=data, headers={"Authorization": "Basic " + base64.b64encode(b"owner:pw").decode()})
         try:
             r = c.getresponse()
+            r.read()
             return r.status
         except (http.client.HTTPException, OSError) as e:
             return type(e).__name__

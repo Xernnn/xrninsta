@@ -203,6 +203,7 @@ function render() {
 // ---- the Dashboard --------------------------------------------------------------------------------
 
 function renderArtists() {
+  stale.delete('artists');
   const genre = $('#artist-genre').value || 'ALL';
   const board = dashboard(data, { genre, oldest: $('#artist-sort').value === 'old', words: $('#find').value });
 
@@ -260,6 +261,7 @@ function songFilters() {
 }
 
 function renderSongs() {
+  stale.delete('songs');
   const rows = songList(data, songFilters());
   $('#song-count').textContent = rows.length === data.songs.length ? `${rows.length} songs` : `${rows.length} of ${data.songs.length} songs`;
   $('#songs').replaceChildren(...(rows.length
@@ -300,8 +302,21 @@ function songForm(s) {
   return el('tr', { class: 'editing' }, el('td', { colspan: 5 }, form));
 }
 
-// Find, at the top right, narrows every tab at once, so switching tab keeps what was asked for.
-$('#find').addEventListener('input', () => { if (data) render(); });
+// Find, at the top right, narrows every tab at once, so switching tab keeps what was asked for. Only
+// the tab on show is rebuilt as it's typed into, once typing pauses; the others catch up when shown.
+// Rebuilding all three on every key took about 60 ms a key with 2,000 songs on a slow phone.
+const stale = new Set();
+const RENDER = { artists: () => renderArtists(), songs: () => renderSongs(), holds: () => renderHolds() };
+let findTimer = 0;
+$('#find').addEventListener('input', () => {
+  clearTimeout(findTimer);
+  findTimer = setTimeout(() => {
+    if (!data) return;
+    const shown = document.querySelector('[role=tab][aria-selected=true]')?.dataset.tab || 'artists';
+    for (const name of Object.keys(RENDER)) if (name !== shown) stale.add(name);
+    RENDER[shown]();
+  }, 100);
+});
 // / or Ctrl+F goes to it, as in a sheet, unless something else is being typed into.
 document.addEventListener('keydown', (e) => {
   if ($('#app').hidden) return;
@@ -334,6 +349,7 @@ $('#add-song').addEventListener('submit', async (e) => {
 // ---- OnHold ---------------------------------------------------------------------------------------
 
 function renderHolds() {
+  stale.delete('holds');
   const n = data.holds.length;
   const rows = holdList(data, { words: $('#find').value });
   const total = n === 1 ? '1 song on hold' : `${n} songs on hold`;
@@ -455,6 +471,7 @@ function showTab(name) {
   for (const b of document.querySelectorAll('[role=tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
   for (const s of document.querySelectorAll('.tab')) s.hidden = s.id !== `tab-${name}`;
   try { localStorage.setItem('xrninsta.tab', name); } catch { /* private window */ }
+  if (data && stale.has(name)) RENDER[name]();
 }
 
 for (const b of document.querySelectorAll('[role=tab]')) b.addEventListener('click', () => showTab(b.dataset.tab));

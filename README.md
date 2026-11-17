@@ -56,7 +56,9 @@ word in Vietnamese, with the songs in an SQLite file on the home server and noth
    ignored.
 
 2. Install it: `server/deploy.sh`. It ends with `check`, which names the bot and says Telegram
-   still sends its messages to the Apps Script. Nothing has moved yet.
+   still sends its messages to the Apps Script. Nothing has moved yet. It says which branch and
+   commit it sends, and refuses uncommitted changes to `server/xrninsta.py` or `web/`
+   (`--force` sends them anyway).
 3. Download the sheet as .xlsx (File, Download, Microsoft Excel) and import it:
 
    ```sh

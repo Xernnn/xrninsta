@@ -391,6 +391,52 @@ class Polling(Base):
         self.assertNotIn("webhook", poller.status["error"])
 
 
+class Deploying(unittest.TestCase):
+    """deploy.sh in a throwaway clone of this repo, with an ssh that only notes it was called."""
+
+    def setUp(self):
+        import subprocess
+        self.run_ = subprocess.run
+        self.folder = tempfile.mkdtemp(prefix="xrninsta-deploy-")
+        self.addCleanup(shutil.rmtree, self.folder)
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.clone = os.path.join(self.folder, "repo")
+        subprocess.run(["git", "clone", "-q", repo, self.clone], check=True)
+        shutil.copy(os.path.join(repo, "server", "deploy.sh"), os.path.join(self.clone, "server"))  # as it is now
+        # deploy.sh runs the tests first; these would run this test again.
+        with open(os.path.join(self.clone, "server", "test_xrninsta.py"), "w") as f:
+            f.write("import unittest\n\n\nclass Stand(unittest.TestCase):\n    def test_in(self):\n        pass\n")
+        bin_ = os.path.join(self.folder, "bin")
+        os.makedirs(bin_)
+        self.calls = os.path.join(self.folder, "ssh-calls")
+        with open(os.path.join(bin_, "ssh"), "w") as f:
+            f.write(f'#!/bin/sh\necho "$*" >> {self.calls}\ncat >/dev/null\nexit 1\n')
+        os.chmod(os.path.join(bin_, "ssh"), 0o755)
+        self.env = {**os.environ, "PATH": bin_ + os.pathsep + os.environ["PATH"]}
+
+    def deploy(self, *args):
+        r = self.run_(["sh", os.path.join(self.clone, "server", "deploy.sh"), *args], env=self.env,
+                      capture_output=True, text=True, timeout=60)
+        return r.returncode, r.stdout + r.stderr, os.path.exists(self.calls)
+
+    def test_uncommitted_changes_to_what_goes_up_are_refused(self):
+        # It copied the working tree as it was: a half-done edit went live with no commit naming it.
+        with open(os.path.join(self.clone, "web", "app.js"), "a") as f:
+            f.write("// half done\n")
+        code, said, reached = self.deploy("somehost")
+        self.assertEqual((code, reached), (1, False), said)
+        self.assertIn("web/app.js", said)
+        code, said, reached = self.deploy("--force", "somehost")
+        self.assertTrue(reached, said)  # past the check, to the (stub) server
+        self.assertIn("with uncommitted changes", said)
+
+    def test_a_clean_tree_goes_up_and_says_which_commit(self):
+        head = self.run_(["git", "-C", self.clone, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+        code, said, reached = self.deploy("somehost")
+        self.assertTrue(reached, said)
+        self.assertIn(f"at {head}", said)
+
+
 def write_xlsx(path, sheets):
     """A minimal .xlsx: {name: {row number: [values]}}, strings inline."""
     def col(i):

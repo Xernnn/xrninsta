@@ -3,12 +3,29 @@
 # Funnel), next to the xrn sync services. Safe to run again: an update replaces the program and its
 # page and restarts it, and leaves the songs and bot.json alone.
 #
-#     server/deploy.sh [ssh-host]      (default: homeserver)
+#     server/deploy.sh [--force] [ssh-host]      (default: homeserver)
+#
+# What goes up is the working tree's server/xrninsta.py and web/, so it refuses
+# uncommitted changes to them (--force sends them anyway) and says which branch
+# and commit it is. Any branch will do: a fix can go live before it's merged.
 set -eu
 
+FORCE=
+if [ "${1:-}" = --force ]; then FORCE=1; shift; fi
 HOST=${1:-homeserver}
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
+
+if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+    dirty=$(git -C "$REPO" status --porcelain -- server/xrninsta.py web)
+    if [ -n "$dirty" ] && [ -z "$FORCE" ]; then
+        echo "Uncommitted changes to what would go up, so nothing was changed:" >&2
+        echo "$dirty" >&2
+        echo "Commit them, or run with --force to send them anyway." >&2
+        exit 1
+    fi
+    echo "Deploying $(git -C "$REPO" rev-parse --abbrev-ref HEAD) at $(git -C "$REPO" rev-parse --short HEAD)${dirty:+, with uncommitted changes}"
+fi
 
 echo "Testing first..."
 if ! (cd "$HERE" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_xrninsta >/dev/null 2>&1); then

@@ -537,6 +537,25 @@ class Page(unittest.TestCase):
                      {"title": "x" * 201, "artists": "A", "genre": "VPOP"}, ["not", "an", "object"]):
             self.assertEqual(self.call("POST", "/api/songs", body)[0], 400, body)
 
+    def raw(self, method, path, data):
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
+        c.request(method, path, body=data, headers={"Authorization": "Basic " + base64.b64encode(b"owner:pw").decode()})
+        try:
+            r = c.getresponse()
+            return r.status
+        except (http.client.HTTPException, OSError) as e:
+            return type(e).__name__
+        finally:
+            c.close()
+
+    def test_a_body_json_takes_but_the_server_cant_store_is_a_400(self):
+        # A lone surrogate passed every check and broke in SQLite; a deep enough nesting broke the
+        # parser with RecursionError. Both dropped the connection with a traceback in the log.
+        self.assertEqual(self.raw("POST", "/api/holds", b'{"title": "\\ud800"}'), 400)
+        self.assertEqual(self.raw("POST", "/api/songs", b'{"title": "A", "artists": "B\\udfff", "genre": "VPOP"}'), 400)
+        self.assertEqual(self.raw("POST", "/api/holds", b"[" * 30000 + b"]" * 30000), 400)
+        self.assertEqual((self.store.songs(), self.store.holds()), ([], []))
+
     def test_a_hold_becomes_a_song_in_one_go(self):
         status, hold = self.call("POST", "/api/holds", {"title": "Later", "artists": "", "note": "line one\nline two"})
         self.assertEqual((status, hold["note"]), (201, "line one\nline two"))

@@ -1401,6 +1401,9 @@ def clean_text(doc, name, most, required):
     value = re.sub(r"\s+", " ", value).strip() if name != "note" else value.strip()
     if any(unicodedata.category(c) == "Cc" and c != "\n" for c in value):
         raise BadInput(f"{name} has control characters")
+    # JSON takes "\ud800" on its own; SQLite can't store it, and failed outside this check.
+    if any(unicodedata.category(c) == "Cs" for c in value):
+        raise BadInput(f"{name} isn't valid text")
     if required and not value:
         raise BadInput(f"{name} is needed")
     if len(value) > most:
@@ -1494,7 +1497,7 @@ class Handler(BaseHTTPRequestHandler):
         self.body_read = True
         try:
             return json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: nested deeper than the parser goes
             self.send(400, "body must be JSON")
             return None
 

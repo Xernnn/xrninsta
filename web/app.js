@@ -419,11 +419,19 @@ for (const opener of document.querySelectorAll('.opener')) {
 
 // ---- writing ----------------------------------------------------------------------------------------
 
-async function send(path, opts) {
+// [record] is the one a form is fixing: a save that lost a race with the bot keeps that form and
+// what was typed in it, with the record's tag moved on, so Save again puts it on top. Reloading
+// closed the form and threw the typing away.
+async function send(path, opts, record) {
   try {
     await api(path, opts);
   } catch (err) {
     if (err instanceof Stop) return false;
+    if (err.status === 412 && record && err.doc && err.doc.current) {
+      record.updated = err.doc.current.updated;
+      alert('Changed elsewhere since you opened it. Save again to keep yours.');
+      return false;
+    }
     if (err.status === 412) alert('That changed somewhere else since you opened it. Showing it as it is now.');
     else if (err.status === 404) alert('That has gone: it was deleted somewhere else.');
     else { alert(err.message); return false; }
@@ -434,7 +442,7 @@ async function send(path, opts) {
 }
 
 function change(table, record, body) {
-  return send(`api/${table}/${record.id}`, { method: 'PUT', body, tag: record.updated });
+  return send(`api/${table}/${record.id}`, { method: 'PUT', body, tag: record.updated }, record);
 }
 
 function remove(table, record, question) {

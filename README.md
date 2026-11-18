@@ -129,6 +129,9 @@ python3 server/xrninsta.py --port 5239 --data ./data --users <htpasswd file> --c
 Open `http://127.0.0.1:5239/xrninsta/` and sign in as the users file's first user. Without a token
 in bot.json the page runs and the bot doesn't.
 
+The page uses [MiSans](https://hyperos.mi.com/font) by Xiaomi, the font of every xrn app, free for
+commercial use and served with the page (`web/MiSansLatinVF.woff2`) under its terms.
+
 ## Tests
 
 ```sh

@@ -75,6 +75,49 @@ word in Vietnamese, with the songs in an SQLite file on the home server and noth
 Add songs only through the bot between steps 3 and 4 if you're willing to import again; the import
 won't run over songs that are already there without `--replace`.
 
+## The daily cover
+
+A second bot, the Daily Story Bot, used to be its own Apps Script
+([apps-script/coverbot.gs](apps-script/coverbot.gs)) reading a Google Drive folder of covers. Each
+cover is `Day_<n>.png`, Day 263 being 18 Oct 2026. xrninsta runs that bot too, with its own token,
+and keeps the covers on the server, in `~/xrninsta/data/covers`.
+
+- At **2am Sydney time**, daylight saving or not, it sends that day's cover to its chat with the
+  caption "Day 295's cover". `/sendnow` sends it at once, and `/start` says hello, as before.
+- It notes the day it last sent. A restart never sends a cover twice, and a server that was off at
+  2am sends that day's cover once it's back (never an older one).
+- A missing cover is said once in the chat, with its name.
+- Covers stay on the server once sent. The script moved the last five to the bin.
+- The covers are left out of the server's backups. A year of them is 38 MB, and backups are kept
+  for 60 days. Keep the zip.
+
+### Moving it over
+
+1. Deploy (`server/deploy.sh`) so the server has the commands below.
+2. Copy the covers. A zip of the Drive folder works as it is, and so does a folder of PNGs:
+
+   ```sh
+   scp output_stories.zip homeserver:~/xrninsta/covers.zip
+   ssh homeserver 'python ~/xrninsta/xrninsta.py covers ~/xrninsta/covers.zip --data ~/xrninsta/data && rm ~/xrninsta/covers.zip'
+   ```
+
+   It says how far the covers go and which are missing. Add more the same way. A cover with a name
+   already there replaces it.
+3. Give it the bot. The token and chat are in the cover script's Project Settings, under Script
+   properties (`BOT_TOKEN`, `ALLOWED_CHAT_ID`). The command asks for both, so the token never goes
+   on a command line:
+
+   ```sh
+   ssh -t homeserver 'python ~/xrninsta/xrninsta.py covers-bot --config ~/.config/xrninsta/bot.json'
+   ssh homeserver 'SVDIR=$PREFIX/var/service sv restart xrninsta'
+   ```
+
+   Started after 2am, it takes that day's cover as sent by the script, and starts with tomorrow's.
+4. Switch: `ssh homeserver 'python ~/xrninsta/xrninsta.py webhook-off --covers --config ~/.config/xrninsta/bot.json'`.
+   `check --covers` (add `--data ~/xrninsta/data` for the covers) shows where its messages go.
+5. In the cover script's Triggers, delete the daily trigger for `sendDailyStory` before the next
+   2am, or both send that night's cover. Don't run `forceSetWebhook` again.
+
 ## Running it
 
 Python 3.11 or newer, plus `bcrypt`.

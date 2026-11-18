@@ -44,6 +44,8 @@ tar czf - --exclude=__pycache__ -C "$HERE" xrninsta.py -C "$REPO" web | ssh "$HO
     rm -rf web
     tar xzf -
     chmod 755 xrninsta.py
+    # Termux Python has no time zone data; the daily cover goes at 2am Sydney time.
+    pip install --quiet --disable-pip-version-check tzdata || echo "tzdata not installed: the daily cover waits for it"
 '
 
 echo "Setting up the service..."
@@ -90,7 +92,10 @@ echo "Publishing /xrninsta..."
 ssh "$HOST" 'tailscale funnel --bg --set-path /xrninsta http://127.0.0.1:5239 >/dev/null; tailscale funnel status'
 
 if ssh "$HOST" 'test -s ~/.config/xrninsta/bot.json'; then
-    ssh "$HOST" 'python ~/xrninsta/xrninsta.py check --config ~/.config/xrninsta/bot.json' || true
+    ssh "$HOST" 'python ~/xrninsta/xrninsta.py check --config ~/.config/xrninsta/bot.json
+        if grep -q covers ~/.config/xrninsta/bot.json; then
+            python ~/xrninsta/xrninsta.py check --covers --config ~/.config/xrninsta/bot.json --data ~/xrninsta/data
+        fi' || true
 else
     echo "No ~/.config/xrninsta/bot.json yet: the page runs, the bot waits for its token (see the README)."
 fi

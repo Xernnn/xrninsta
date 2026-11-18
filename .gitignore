@@ -3,3 +3,6 @@
 *.csv
 __pycache__/
 /data/
+# Covers: real images, kept on the server, not here.
+*.zip
+*.png

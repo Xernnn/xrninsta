@@ -4,6 +4,9 @@ Every song and name here is made up. Run: python3 -m unittest test_xrninsta (fro
 """
 import base64
 import concurrent.futures
+import datetime
+import email.parser
+import email.policy
 import hashlib
 import http.client
 import io
@@ -17,7 +20,7 @@ import threading
 import time
 import unittest
 import zipfile
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 import xrninsta as x
@@ -29,12 +32,17 @@ class FakeTelegram:
     def __init__(self):
         self.calls = []
         self.updates = []
+        self.answers = {}  # method -> what Telegram says to it (None: it couldn't be reached)
 
     def call(self, method, payload=None, timeout=15):
         self.calls.append((method, payload or {}))
         if method == "getUpdates":
             return self.updates.pop(0) if self.updates else {"ok": True, "result": []}
-        return {"ok": True, "result": {}}
+        return self.answers.get(method, {"ok": True, "result": {}})
+
+    def upload(self, method, fields, name, filename, content, timeout=60):
+        self.calls.append((method, {**fields, name: (filename, content)}))
+        return self.answers.get(method, {"ok": True, "result": {}})
 
     def sent(self, method=None):
         return [p for m, p in self.calls if method is None or m == method]
@@ -393,6 +401,306 @@ class Polling(Base):
         self.assertEqual(poller.once(), 30)
         self.assertEqual(poller.status["state"], "twice")
         self.assertNotIn("webhook", poller.status["error"])
+
+
+SYDNEY = x.load_zone("Australia/Sydney")
+PNG = x.PNG_SIGNATURE + b"a made-up cover "
+
+
+def at(utc):
+    """A UTC time ("2026-11-18 15:00") as Sydney's clock reads it."""
+    return datetime.datetime.fromisoformat(utc + "+00:00").astimezone(SYDNEY)
+
+
+class Covering(unittest.TestCase):
+    """coverbot.gs's Daily Story Bot: today's cover at 2am Sydney time, and /sendnow."""
+
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="xrninsta-covers-")
+        self.addCleanup(shutil.rmtree, self.folder)
+        self.store = x.Store(os.path.join(self.folder, "data"))
+        self.dir = os.path.join(self.folder, "data", "covers")
+        os.makedirs(self.dir)
+        self.tg = FakeTelegram()
+        self.covers = x.Covers(self.store, self.tg, CHAT, self.dir, SYDNEY)
+        self.next_id = 0
+
+    def cover(self, day):
+        with open(os.path.join(self.dir, f"Day_{day}.png"), "wb") as f:
+            f.write(PNG + str(day).encode())
+
+    def photos(self):
+        return [p["caption"] for p in self.tg.sent("sendPhoto")]
+
+    def say(self, text, chat=CHAT, now=None):
+        self.next_id += 1
+        with mock.patch.object(self.covers, "now", return_value=now or at("2026-11-19 01:00")):
+            self.covers.handle({"update_id": self.next_id, "message": {
+                "message_id": self.next_id, "chat": {"id": int(chat)}, "from": {"id": USER}, "text": text}})
+
+    def test_the_day_counts_on_from_the_scripts_start(self):
+        self.assertEqual(x.cover_day(datetime.date(2026, 10, 18)), 263)
+        self.assertEqual(x.cover_day(datetime.date(2026, 11, 19)), 295)
+        self.assertEqual(x.cover_day(datetime.date(2027, 9, 20)), 600)
+
+    def test_todays_cover_goes_at_2am_sydney_time_and_once(self):
+        self.cover(295)
+        self.covers.tick(at("2026-11-18 14:59"))  # 1:59am on the 19th, in daylight saving (UTC+11)
+        self.assertEqual(self.photos(), [])
+        self.covers.tick(at("2026-11-18 15:00"))
+        self.assertEqual(self.photos(), ["Day 295's cover"])
+        sent = self.tg.sent("sendPhoto")[0]
+        self.assertEqual((sent["chat_id"], sent["photo"]), (CHAT, ("Day_295.png", PNG + b"295")))
+        self.covers.tick(at("2026-11-18 15:01"))
+        self.covers.tick(at("2026-11-19 03:00"))  # 2pm, the same day
+        self.assertEqual(self.photos(), ["Day 295's cover"])
+        self.assertEqual(self.store.meta("cover_day"), "295")
+
+    def test_2am_moves_with_daylight_saving(self):
+        day = x.cover_day(datetime.date(2027, 6, 10))
+        self.cover(day)
+        self.covers.tick(at("2027-06-09 15:30"))  # 1:30am in winter (UTC+10)
+        self.assertEqual(self.photos(), [])
+        self.covers.tick(at("2027-06-09 16:00"))
+        self.assertEqual(self.photos(), [f"Day {day}'s cover"])
+
+    def test_the_nights_the_clocks_change_send_one_cover_each(self):
+        spring, autumn = x.cover_day(datetime.date(2026, 10, 4)), x.cover_day(datetime.date(2027, 4, 4))
+        self.cover(spring)
+        self.cover(autumn)
+        # 4 Oct 2026 has no 2am: 1:59 is followed by 3:00.
+        self.covers.tick(at("2026-10-03 15:59"))
+        self.assertEqual(self.photos(), [])
+        self.covers.tick(at("2026-10-03 16:00"))
+        self.assertEqual(self.photos(), [f"Day {spring}'s cover"])
+        # 4 Apr 2027 has two: 2:00 in daylight saving, and an hour later 2:00 again.
+        self.covers.tick(at("2027-04-03 15:00"))
+        self.covers.tick(at("2027-04-03 16:00"))
+        self.assertEqual(self.photos(), [f"Day {spring}'s cover", f"Day {autumn}'s cover"])
+
+    def test_a_server_down_at_2am_sends_todays_when_back_and_never_an_old_one(self):
+        self.cover(294)
+        self.cover(295)
+        self.store.set_meta("cover_day", 293)
+        self.covers.tick(at("2026-11-18 23:00"))  # 10am on the 19th
+        self.assertEqual(self.photos(), ["Day 295's cover"])
+
+    def test_a_missing_cover_is_said_once_with_its_name_in_bold(self):
+        self.covers.tick(at("2026-11-18 15:00"))
+        self.covers.tick(at("2026-11-18 16:00"))
+        said = self.tg.sent("sendMessage")
+        self.assertEqual(len(said), 1)
+        # The script sent this without parse_mode, so the chat saw the <b> tags themselves.
+        self.assertEqual(said[0]["parse_mode"], "HTML")
+        self.assertIn("<b>Day_295.png</b>", said[0]["text"])
+        self.assertEqual(self.covers.status["state"], "missing")
+        self.cover(296)
+        self.covers.tick(at("2026-11-19 15:00"))
+        self.assertEqual(self.photos(), ["Day 296's cover"])
+
+    def test_telegram_out_of_reach_is_tried_again(self):
+        self.cover(295)
+        self.tg.answers["sendPhoto"] = None
+        self.assertEqual(self.covers.tick(at("2026-11-18 15:00")), 300)
+        self.assertIsNone(self.store.meta("cover_day"))
+        del self.tg.answers["sendPhoto"]
+        self.covers.tick(at("2026-11-18 15:05"))
+        self.assertEqual(self.photos(), ["Day 295's cover", "Day 295's cover"])  # the one that failed, then the one that went
+        self.assertEqual(self.store.meta("cover_day"), "295")
+        self.assertEqual(self.tg.sent("sendMessage"), [])
+
+    def test_a_refused_photo_is_said_once(self):
+        self.cover(295)
+        self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 400, "description": "Bad Request: <IMAGE_PROCESS_FAILED>"}
+        self.covers.tick(at("2026-11-18 15:00"))
+        self.covers.tick(at("2026-11-18 15:01"))
+        said = [p["text"] for p in self.tg.sent("sendMessage")]
+        self.assertEqual(said, ["❌ Lỗi khi gửi ảnh: Bad Request: &lt;IMAGE_PROCESS_FAILED&gt;"])
+
+    def test_sendnow_sends_at_once_and_2am_then_leaves_the_day_alone(self):
+        self.cover(295)
+        self.say("/sendnow")  # 1am on the 19th: the day is already Day 295's
+        self.assertEqual(self.photos(), ["Day 295's cover"])
+        self.covers.tick(at("2026-11-18 15:00"))
+        self.assertEqual(self.photos(), ["Day 295's cover"])
+        self.say("/sendnow@daily_story_bot")  # asked again, it goes again
+        self.assertEqual(self.photos(), ["Day 295's cover"] * 2)
+
+    def test_it_answers_only_its_chat_and_its_own_commands(self):
+        self.cover(295)
+        self.say("/sendnow", chat="999")
+        self.say("/sendnowplease")
+        self.say("Day 295")
+        self.assertEqual(self.tg.calls, [])
+        self.say("/start")
+        self.assertTrue(self.tg.last_text().startswith("🌅 Daily Story Bot đã sẵn sàng!"))
+
+    def test_with_no_chat_it_sends_no_one_anything(self):
+        covers = x.Covers(self.store, self.tg, "", self.dir, SYDNEY)
+        self.cover(295)
+        covers.tick(at("2026-11-18 15:00"))
+        self.assertEqual(self.tg.calls, [])
+        self.assertEqual(covers.status["state"], "nochat")
+
+    def test_without_time_zone_data_it_sends_nothing_and_says_why(self):
+        self.cover(295)
+        with mock.patch.object(x, "load_zone", return_value=None):
+            covers = x.Covers(self.store, self.tg, CHAT, self.dir)
+        covers.tick()
+        self.assertEqual(self.tg.calls, [])
+        self.assertEqual(covers.status["state"], "nozone")
+        self.assertIn("tzdata", covers.status["error"])
+
+    def test_the_first_start_after_2am_leaves_todays_to_the_apps_script(self):
+        # The day of the switch, the script has sent today's already; the server mustn't send it again.
+        self.cover(295)
+        self.cover(296)
+        self.covers.first_start(at("2026-11-19 04:00"))  # 3pm on the 19th
+        self.covers.tick(at("2026-11-19 04:01"))
+        self.assertEqual(self.photos(), [])
+        self.covers.tick(at("2026-11-19 15:00"))  # 2am on the 20th
+        self.assertEqual(self.photos(), ["Day 296's cover"])
+        self.covers.first_start(at("2026-11-20 04:00"))  # a restart after that changes nothing
+        self.assertEqual(self.store.meta("cover_day"), "296")
+
+    def test_a_first_start_before_2am_sends_that_day(self):
+        self.cover(295)
+        self.covers.first_start(at("2026-11-18 14:00"))  # 1am on the 19th
+        self.covers.tick(at("2026-11-18 15:00"))
+        self.assertEqual(self.photos(), ["Day 295's cover"])
+
+    def test_its_poller_keeps_its_own_place_and_names_its_own_switch(self):
+        self.store.set_meta("offset", 7)  # the song bot's
+        poller = x.covers_poller(self.store, self.covers)
+        self.tg.updates = [{"ok": True, "result": [{"update_id": 30, "message": {
+            "message_id": 1, "chat": {"id": int(CHAT)}, "from": {"id": USER}, "text": "/start"}}]}]
+        poller.once()
+        self.assertEqual((self.store.meta("covers_offset"), self.store.meta("offset")), ("31", "7"))
+        self.tg.updates = [{"ok": False, "error_code": 409, "description": "Conflict: can't use getUpdates method while "
+                                                                             "webhook is active; use deleteWebhook to delete the webhook first"}]
+        poller.once()
+        self.assertIn("xrninsta.py webhook-off --covers", poller.status["error"])
+
+    def test_a_covers_token_thats_the_song_bots_starts_nothing(self):
+        conf = {"token": "same", "chat": CHAT, "covers": {"token": "same", "chat": CHAT}}
+        with mock.patch.object(x, "log"), mock.patch.object(x.threading, "Thread") as thread:
+            self.assertIsNone(x.start_covers(self.store, conf, os.path.join(self.folder, "data"), "same"))
+        thread.assert_not_called()
+
+
+class CoverBotSetting(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="xrninsta-coverbot-")
+        self.addCleanup(shutil.rmtree, self.folder)
+        self.path = os.path.join(self.folder, "bot.json")
+        with open(self.path, "w") as f:
+            json.dump({"token": "song:token", "chat": CHAT}, f)
+
+    def test_it_goes_under_covers_and_keeps_the_song_bot(self):
+        x.set_covers_bot(self.path, " story:token ", f" {CHAT}\n")
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), {"token": "song:token", "chat": CHAT,
+                                            "covers": {"token": "story:token", "chat": CHAT}})
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+    def test_a_wrong_chat_or_the_song_bots_token_writes_nothing(self):
+        for token, chat in (("story:token", "me"), ("song:token", CHAT), ("", CHAT)):
+            with self.assertRaises(SystemExit):
+                x.set_covers_bot(self.path, token, chat)
+        with open(self.path) as f:
+            self.assertNotIn("covers", json.load(f))
+
+
+class CoverUpload(unittest.TestCase):
+    """The photo goes to Telegram as a form with the file in it, as the script's blob did."""
+
+    def test_the_fields_and_the_file_arrive_whole(self):
+        seen = {}
+
+        class Telegram(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen["path"] = self.path
+                seen["type"] = self.headers["Content-Type"]
+                seen["body"] = self.rfile.read(int(self.headers["Content-Length"]))
+                body = b'{"ok": true, "result": {"message_id": 1}}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Telegram)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        tg = x.Telegram("123:abc")
+        tg.base = f"http://127.0.0.1:{srv.server_address[1]}"
+        content = PNG + bytes(range(256)) + b"\r\n--"  # every byte, and what looks like a boundary's start
+        answer = tg.upload("sendPhoto", {"chat_id": CHAT, "caption": "Day 295's cover"}, "photo", "Day_295.png", content)
+        self.assertTrue(answer["ok"])
+        self.assertEqual(seen["path"], "/bot123:abc/sendPhoto")
+        form = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
+            b"Content-Type: " + seen["type"].encode() + b"\r\n\r\n" + seen["body"])
+        parts = {p.get_param("name", header="content-disposition"): p for p in form.iter_parts()}
+        self.assertEqual(parts["chat_id"].get_payload(decode=True), CHAT.encode())
+        self.assertEqual(parts["caption"].get_payload(decode=True), b"Day 295's cover")
+        self.assertEqual(parts["photo"].get_filename(), "Day_295.png")
+        self.assertEqual(parts["photo"].get_content_type(), "image/png")
+        self.assertEqual(parts["photo"].get_payload(decode=True), content)
+
+
+class AddingCovers(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="xrninsta-addcovers-")
+        self.addCleanup(shutil.rmtree, self.folder)
+        self.dir = os.path.join(self.folder, "data", "covers")
+
+    def zip_of(self, files):
+        path = os.path.join(self.folder, "covers.zip")
+        with zipfile.ZipFile(path, "w") as z:
+            for name, content in files.items():
+                z.writestr(name, content)
+        return path
+
+    def test_a_drive_zip_goes_into_the_folder_by_name(self):
+        source = self.zip_of({
+            "output_stories/Day_294.png": PNG + b"294",
+            "output_stories/Day_295.png": PNG + b"295",
+            "__MACOSX/output_stories/._Day_295.png": b"\x00\x05\x16\x07",
+            "output_stories/notes.txt": b"made up",
+            "output_stories/Day_296.png": b"not a png",
+            "../../Day_297.png": PNG + b"297",  # a name with a path lands in the folder, nowhere else
+        })
+        r = x.add_covers(self.dir, source)
+        self.assertEqual((r["added"], r["replaced"], len(r["skipped"])), (3, 0, 3))
+        self.assertEqual(sorted(os.listdir(self.dir)), ["Day_294.png", "Day_295.png", "Day_297.png"])
+        with open(os.path.join(self.dir, "Day_295.png"), "rb") as f:
+            self.assertEqual(f.read(), PNG + b"295")
+        self.assertEqual(os.stat(os.path.join(self.dir, "Day_295.png")).st_mode & 0o777, 0o600)
+        self.assertFalse(os.path.exists(os.path.join(self.folder, "Day_297.png")))
+        self.assertEqual(x.add_covers(self.dir, source)["replaced"], 3)
+
+    def test_a_folder_works_too_and_an_oversized_file_is_skipped(self):
+        src = os.path.join(self.folder, "src")
+        os.makedirs(src)
+        for name, content in {"Day_300.png": PNG, "Day_301.png": PNG + b"x" * x.COVER_MAX_BYTES}.items():
+            with open(os.path.join(src, name), "wb") as f:
+                f.write(content)
+        r = x.add_covers(self.dir, src)
+        self.assertEqual((r["added"], r["skipped"]), (1, ["Day_301.png"]))
+
+    def test_the_summary_says_how_far_the_covers_go(self):
+        os.makedirs(self.dir)
+        for day in (290, 295, 296, 298):
+            open(os.path.join(self.dir, f"Day_{day}.png"), "wb").close()
+        self.assertEqual(x.covers_summary(self.dir, 295),
+                         "Covers: Day 295 (today) to Day 298, the last on 22 Nov 2026; 1 more missing before the last")
+        self.assertEqual(x.covers_summary(self.dir, 294),
+                         "Covers: Day 294 (today) to Day 298, the last on 22 Nov 2026; today's (Day_294.png) is missing; "
+                         "1 more missing before the last")
+        self.assertEqual(x.covers_summary(self.dir, 299), f"Covers: none from Day 299 (today) on, in {self.dir}")
 
 
 class Deploying(unittest.TestCase):
@@ -835,6 +1143,15 @@ class Page(unittest.TestCase):
         self.assertNotIn("a" * 64, listed)
         self.assertIn("b" * 64, listed)
         self.assertIn(self.hash_of(mine), listed)
+
+    def test_the_status_says_how_the_cover_bot_is_doing(self):
+        covers = x.Covers(self.store, FakeTelegram(), CHAT, os.path.join(self.folder, "covers"), SYDNEY)
+        x.Handler.app["covers"] = (covers, x.covers_poller(self.store, covers))
+        self.addCleanup(x.Handler.app.pop, "covers")
+        covers.note("missing", "no Day_295.png")
+        code, doc = self.call("GET", "/api/status")
+        self.assertEqual((code, doc["state"]), (200, "off"))
+        self.assertEqual((doc["covers"]["send"]["state"], doc["covers"]["bot"]["state"]), ("missing", "starting"))
 
     def test_the_page_and_nothing_outside_web(self):
         self.assertEqual(self.call("GET", "/xrninsta/", user=None)[0], 200)

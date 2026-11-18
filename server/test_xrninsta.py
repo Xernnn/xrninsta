@@ -4,10 +4,14 @@ Every song and name here is made up. Run: python3 -m unittest test_xrninsta (fro
 """
 import base64
 import concurrent.futures
+import hashlib
 import http.client
+import io
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -699,6 +703,138 @@ class Page(unittest.TestCase):
         r.read()
         self.assertEqual(r.status, 401)
         c.close()
+
+    def a_cookie(self, expires, user="owner"):
+        """A sign-in cookie as make_session makes it, running out at [expires]: two made in the same
+        second are the same cookie."""
+        login = x.Handler.app["login"]
+        who = base64.urlsafe_b64encode(user.encode()).decode().rstrip("=")
+        body = f"{who}.{expires}"
+        return f"{body}.{login.mac(body, login.password_tag(user))}"
+
+    def as_page(self, cookie):
+        return {"Cookie": f"{x.SESSION_COOKIE}={cookie}", "X-Xrn-Client": "xrninsta"}
+
+    def shared_list(self):
+        """signed-out.json beside the users file: what every server that takes the cookie reads."""
+        return os.path.join(self.folder, "signed-out.json")
+
+    def read_list(self):
+        try:
+            with open(self.shared_list(), encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+
+    def write_list(self, doc):
+        """The shared list as another server (the hub) writes it: a new file in the old one's place."""
+        with open(self.shared_list() + ".test", "w", encoding="utf-8") as f:
+            f.write(doc if isinstance(doc, str) else json.dumps(doc))
+        os.replace(self.shared_list() + ".test", self.shared_list())
+
+    @staticmethod
+    def hash_of(cookie):
+        return hashlib.sha256(cookie.encode()).hexdigest()
+
+    def test_a_cookie_signed_out_on_another_server_is_refused_here(self):
+        # Signing out of xrnhub ended the cookie there only: a copy of it went on opening the songs
+        # for the rest of its 30 days.
+        expires = int(time.time()) + 8000
+        cookie = self.a_cookie(expires)
+        self.assertEqual(self.call("GET", "/api/data", user=None, headers=self.as_page(cookie))[0], 200)
+        self.write_list({**self.read_list(), self.hash_of(cookie): expires})
+        self.assertEqual(self.call("GET", "/api/data", user=None, headers=self.as_page(cookie))[0], 401)
+        self.assertEqual(self.call("GET", "/api/data")[0], 200)  # a password still signs in
+
+    def test_signing_out_ends_the_cookie_here_and_on_every_other_server(self):
+        # DELETE /session only told the browser to drop its cookie: a copy of it (another browser,
+        # a stolen one) went on signing in, here and on the hub, habits and blocks pages.
+        expires = int(time.time()) + 8100
+        mine, other = self.a_cookie(expires), self.a_cookie(expires + 1)
+        self.assertEqual(self.call("DELETE", "/xrninsta/session", user=None, headers=self.as_page(mine))[0], 200)
+        self.assertEqual(self.call("GET", "/api/data", user=None, headers=self.as_page(mine))[0], 401)
+        self.assertEqual(self.call("GET", "/api/data", user=None, headers=self.as_page(other))[0], 200)
+        self.assertEqual(self.read_list()[self.hash_of(mine)], expires)
+        self.assertEqual(os.stat(self.shared_list()).st_mode & 0o777, 0o600)
+        # A sign-out with no session of ours puts nothing on the list.
+        before = self.read_list()
+        for cookie in ("junk", self.a_cookie(int(time.time()) - 5), ""):
+            self.assertEqual(self.call("DELETE", "/session", user=None, headers=self.as_page(cookie))[0], 200)
+        self.assertEqual(self.read_list(), before)
+
+    def test_a_missing_or_broken_list_breaks_no_sign_in(self):
+        gone, live = self.a_cookie(int(time.time()) + 8200), self.a_cookie(int(time.time()) + 8300)
+        x.Handler.app["login"].end_session(f"{x.SESSION_COOKIE}={gone}")
+        self.write_list("{half a file")
+        with mock.patch.object(sys, "stderr", io.StringIO()) as said:
+            for _ in range(3):
+                self.assertEqual(self.call("GET", "/api/data", user=None, headers=self.as_page(live))[0], 200)
+                # The list read before the file broke still holds.
+                self.assertEqual(self.call("GET", "/api/data", user=None, headers=self.as_page(gone))[0], 401)
+            self.assertEqual(self.call("GET", "/api/data")[0], 200)
+            self.assertEqual(self.call("POST", "/session")[0], 200)
+        self.assertEqual(said.getvalue().count("signed-out.json"), 1, said.getvalue())  # one line, not one a request
+        os.remove(self.shared_list())
+        self.assertEqual(self.call("GET", "/api/data", user=None, headers=self.as_page(live))[0], 200)
+        self.assertEqual(self.call("GET", "/api/data")[0], 200)
+        self.assertEqual(self.call("POST", "/session")[0], 200)
+
+    def test_a_new_session_is_never_one_signed_out(self):
+        # A cookie is made from the name, the second it runs out and the password, so a sign-in in
+        # the second of a sign-out (here or on another server) was handed the cookie just ended.
+        login = x.Handler.app["login"]
+        clock = mock.Mock()
+        clock.time.return_value = 1_900_000_100.5
+        with mock.patch.object(x, "time", clock):
+            first = login.make_session("owner")
+            self.assertEqual(login.end_session(f"{x.SESSION_COOKIE}={first}"), "owner")
+            again = login.make_session("owner")
+            self.assertEqual(int(again.split(".")[1]), int(first.split(".")[1]) + 1)
+            self.assertEqual(login.check_session(f"{x.SESSION_COOKIE}={again}"), "owner")
+            # Signed out by the hub instead, the next one is new again.
+            self.write_list({**self.read_list(), self.hash_of(again): int(again.split(".")[1])})
+            third = login.make_session("owner")
+            self.assertNotIn(third, (first, again))
+            self.assertEqual(login.check_session(f"{x.SESSION_COOKIE}={third}"), "owner")
+
+    def test_servers_signing_out_at_once_keep_every_sign_out(self):
+        # The servers share one file: written without a lock, of two signing out together, one
+        # would undo the other.
+        go = os.path.join(self.folder, "go")
+        script = ("import os, sys, time\n"
+                  "sys.path.insert(0, sys.argv[1])\n"
+                  "import xrninsta\n"
+                  "out = xrninsta.SignedOut(sys.argv[2])\n"
+                  "while not os.path.exists(sys.argv[4]): time.sleep(0.001)\n"
+                  "for i in range(30): out.add(f'{sys.argv[3]}-{i}.4000000000.x')\n")
+        here_dir = os.path.dirname(os.path.abspath(x.__file__))
+        others = [subprocess.Popen([sys.executable, "-c", script, here_dir, self.shared_list(), f"server{n}", go])
+                  for n in range(3)]
+        time.sleep(0.3)
+        open(go, "w").close()
+
+        def here(n):
+            for i in range(30):
+                x.Handler.app["login"].signed_out.add(f"here{n}-{i}.4000000000.x")
+
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            list(pool.map(here, range(2)))
+        for other in others:
+            self.assertEqual(other.wait(timeout=60), 0)
+        os.remove(go)
+        listed = self.read_list()
+        for who in ("server0", "server1", "server2", "here0", "here1"):
+            self.assertEqual(sum(self.hash_of(f"{who}-{i}.4000000000.x") in listed for i in range(30)), 30, who)
+        self.write_list({k: v for k, v in listed.items() if v != 4_000_000_000})
+
+    def test_a_sign_out_drops_the_ones_that_have_run_out(self):
+        self.write_list({"a" * 64: int(time.time()) - 5, "b" * 64: int(time.time()) + 600})
+        mine = self.a_cookie(int(time.time()) + 8400)
+        x.Handler.app["login"].end_session(f"{x.SESSION_COOKIE}={mine}")
+        listed = self.read_list()
+        self.assertNotIn("a" * 64, listed)
+        self.assertIn("b" * 64, listed)
+        self.assertIn(self.hash_of(mine), listed)
 
     def test_the_page_and_nothing_outside_web(self):
         self.assertEqual(self.call("GET", "/xrninsta/", user=None)[0], 200)

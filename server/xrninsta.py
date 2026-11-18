@@ -8,7 +8,7 @@ sheet. Standard library only, plus `bcrypt` to read the shared users file, like 
 
     GET    /health                  200 "ok", no login (for monitoring)
     POST   /session                 with Basic auth: sets the shared sign-in cookie
-    DELETE /session                 signs this browser out
+    DELETE /session                 signs this browser out, and ends its cookie on every server
     GET    /api/data                every song and OnHold entry, the genres and their colours
     GET    /api/status              whether the bot is reaching Telegram
     POST   /api/songs               {title, artists, genre, day?, fromHold?}: day defaults to the next
@@ -19,7 +19,10 @@ sheet. Standard library only, plus `bcrypt` to read the shared users file, like 
     DELETE /api/holds/<id>          needs If-Match: "<updated>"
 
 Everything under /api needs the owner's login: the first user in the users file, by Basic auth or
-the shared sign-in cookie with an X-Xrn-Client header. Any other path serves web/.
+the shared sign-in cookie with an X-Xrn-Client header. Any other path serves web/. Signing out ends
+that one cookie: its SHA-256 goes on signed-out.json beside the users file and session.key until it
+would have run out, a list that xrnhub, xrnloops-sync and xrnrule-sync (which take the same cookie)
+also write to and refuse.
 
     python3 xrninsta.py --data ~/xrninsta/data --users ~/.config/xrn-sync/users \\
         --config ~/.config/xrninsta/bot.json [--port 5239]
@@ -33,6 +36,7 @@ is the switch from Apps Script: it stops Telegram posting to the script, so the 
 """
 import argparse
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
@@ -1172,10 +1176,81 @@ def import_xlsx(store, path, replace=False):
 
 # ---- signing in (as the sync servers do) ------------------------------------------------------------
 
+class SignedOut:
+    """The cookies signed out on any server that shares the users file and session.key (xrnhub,
+    xrnloops-sync and xrnrule-sync too): signed-out.json beside them, {sha256 of the cookie: when it
+    would have run out}."""
+
+    def __init__(self, path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.seen = None  # the file (inode, mtime, size) [listed] was read from
+        self.listed = {}
+
+    def read(self):
+        """The file's list: {} with no file, None (and a line in the log) for one that can't be read."""
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                doc = json.load(f)
+            if not isinstance(doc, dict):
+                raise ValueError("not a JSON object")
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError, RecursionError) as e:  # ValueError: also bad UTF-8
+            log(f"{self.path} can't be read, so the sign-outs read before it hold: {e}")
+            return None
+        return {k: v for k, v in doc.items() if isinstance(k, str) and isinstance(v, (int, float))}
+
+    def hashes(self):
+        """The list as the file has it now, read again only when it has changed, so a sign-out on
+        another server counts here from the next request. A file that can't be read keeps the last list."""
+        try:
+            st = os.stat(self.path)
+            now = (st.st_ino, st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            now = None
+        except OSError as e:
+            now = ("unreadable", e.errno)
+        with self.lock:
+            if now != self.seen:
+                self.seen = now
+                listed = self.read() if now is not None else {}
+                if listed is not None:
+                    self.listed = listed
+            return self.listed
+
+    def add(self, token):
+        """Puts a cookie on the list, dropping what has run out. Under an flock on
+        signed-out.json.lock, with the file read again inside it, so two servers signing out at once
+        both keep theirs; written whole to a new file that then takes the old one's place."""
+        lock = os.open(f"{self.path}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            listed = self.read()
+            if listed is None:
+                listed = dict(self.listed)
+            listed[hashlib.sha256(token.encode()).hexdigest()] = int(token.split(".")[1])
+            now = time.time()
+            kept = {k: v for k, v in listed.items() if v >= now}  # run out: refused anyway
+            tmp = f"{self.path}.{os.getpid()}.{threading.get_ident()}.tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(kept, f, separators=(",", ":"))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.path)
+            st = os.stat(self.path)
+            with self.lock:
+                self.seen, self.listed = (st.st_ino, st.st_mtime_ns, st.st_size), kept
+        finally:
+            os.close(lock)  # and with it the flock
+
+
 class Login:
     def __init__(self, users_path):
         self.users_path = users_path
         self.session_key = load_session_key(os.path.join(os.path.dirname(users_path), "session.key"))
+        self.signed_out = SignedOut(os.path.join(os.path.dirname(users_path), "signed-out.json"))
         self.cache = {}
         self.fail_lock = threading.Lock()
         self.fail_settled = threading.Condition(self.fail_lock)  # a login being checked has been settled
@@ -1318,21 +1393,38 @@ class Login:
 
     def make_session(self, user):
         who = base64.urlsafe_b64encode(user.encode()).decode().rstrip("=")
-        body = f"{who}.{int(time.time()) + SESSION_S}"
-        return f"{body}.{self.mac(body, self.password_tag(user))}"
+        tag = self.password_tag(user)
+        expires = int(time.time()) + SESSION_S
+        # A cookie is made from the name, the second it runs out and the password alone, so one made
+        # in the second the same one was signed out (here or on another server) would be that cookie.
+        # It runs out a second later instead, which keeps the format every server reads.
+        listed = self.signed_out.hashes()
+        while True:
+            body = f"{who}.{expires}"
+            token = f"{body}.{self.mac(body, tag)}"
+            if hashlib.sha256(token.encode()).hexdigest() not in listed:
+                return token
+            expires += 1
 
-    def check_session(self, cookie_header):
+    @staticmethod
+    def session_token(cookie_header):
         token = ""
         for part in (cookie_header or "").split(";"):
             name, _, value = part.strip().partition("=")
             if name == SESSION_COOKIE:
                 token = value
+        return token
+
+    def check_session(self, cookie_header):
+        token = self.session_token(cookie_header)
         try:
             who, expires, mac = token.split(".")
             user = base64.urlsafe_b64decode(who + "=" * (-len(who) % 4)).decode("utf-8")
             if int(expires) < time.time():
                 return None
         except ValueError:
+            return None
+        if hashlib.sha256(token.encode()).hexdigest() in self.signed_out.hashes():
             return None
         tag = self.password_tag(user)
         if tag is None:
@@ -1341,6 +1433,18 @@ class Login:
             return user if hmac.compare_digest(self.mac(f"{who}.{expires}", tag), mac) else None
         except TypeError:
             return None
+
+    def end_session(self, cookie_header):
+        """Signs out the session a request's cookie carries, on every server that takes it, until it
+        would have run out anyway. The user it was, or None when it was no session of ours."""
+        user = self.check_session(cookie_header)
+        if not user:
+            return None
+        try:
+            self.signed_out.add(self.session_token(cookie_header))
+        except OSError as e:
+            log(f"sign-out not kept: {e!r}")
+        return user
 
 
 def load_session_key(path):
@@ -1615,6 +1719,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         if self.route() == "/session":
+            # Emptying the browser's cookie alone left any copy of it signing in for its full 30 days.
+            self.app["login"].end_session(self.headers.get("Cookie"))
             return self.send(200, '{"ok":true}', "application/json", {"Set-Cookie": session_cookie("", 0)})
         table, rid = self.record_path()
         if table is None:

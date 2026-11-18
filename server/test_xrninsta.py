@@ -956,6 +956,35 @@ class Page(unittest.TestCase):
         self.assertIn("connection dropped: ConnectionResetError", log)
         self.assertEqual(self.store.holds(), [])
 
+    def idle_after(self, ask):
+        """A kept-alive connection left idle past the handler's timeout, after one request if [ask]."""
+        import socket
+        login = base64.b64encode(b"owner:pw")
+        with mock.patch.object(x.Handler, "timeout", 0.3), mock.patch("sys.stderr", new_callable=io.StringIO) as log:
+            with socket.create_connection(("127.0.0.1", self.srv.server_address[1]), timeout=10) as s:
+                if ask:
+                    s.sendall(b"GET /health HTTP/1.1\r\nHost: x\r\nAuthorization: Basic " + login + b"\r\n\r\n")
+                # Read the answer and then on: the server closing the connection once the timeout
+                # passes ends this; a connection left open would raise socket.timeout instead.
+                got = b""
+                while chunk := s.recv(4096):
+                    got += chunk
+                closed = not ask or got.startswith(b"HTTP/1.1 200 ")
+            time.sleep(0.1)
+        return closed, log.getvalue()
+
+    def test_an_idle_kept_alive_connection_closes_without_a_word(self):
+        # 131 "Request timed out" lines on 18 Nov, one each time a connection the laptop kept open
+        # was closed after the handler's timeout.
+        closed, log = self.idle_after(ask=True)
+        self.assertTrue(closed)
+        self.assertNotIn("timed out", log)
+
+    def test_a_connection_that_never_asks_is_still_logged_when_it_times_out(self):
+        closed, log = self.idle_after(ask=False)
+        self.assertTrue(closed)
+        self.assertIn("Request timed out", log)
+
     def test_a_hold_becomes_a_song_in_one_go(self):
         status, hold = self.call("POST", "/api/holds", {"title": "Later", "artists": "", "note": "line one\nline two"})
         self.assertEqual((status, hold["note"]), (201, "line one\nline two"))

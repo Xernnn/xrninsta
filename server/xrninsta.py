@@ -1808,6 +1808,24 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     timeout = 60
     app = None  # set by serve(): {"store", "login", "poller", "web"}
+    served = 0  # requests answered on this connection
+
+    def handle_one_request(self):
+        """After the first request, waiting for the next is waiting on a kept-alive connection: a page
+        or the laptop app holds an idle one open, and it's closed after `timeout`. One that times out
+        with no new request begun has simply ended, so it closes without a word (http.server logged
+        "Request timed out" for each, 131 of them on 18 Nov, as xrnhub's own log used to). A timeout
+        on the first request, or partway through one, is still logged."""
+        if self.served:
+            try:
+                begun = self.rfile.peek(1)
+            except TimeoutError:
+                begun = b""
+            if not begun:
+                self.close_connection = True
+                return
+        super().handle_one_request()
+        self.served += 1
 
     def parse_request(self):
         self.body_read = False

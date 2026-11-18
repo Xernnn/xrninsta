@@ -841,6 +841,18 @@ class Page(unittest.TestCase):
         for path in ("/../xrninsta.py", "/xrninsta.py", "/.hidden.html"):
             self.assertEqual(self.call("GET", path, user=None)[0], 404, path)
 
+    def test_the_page_gets_its_font(self):
+        # MiSans comes with the page, as in every xrn app: served as a font, and let through the CSP.
+        font = b"wOF2" + bytes(range(256))
+        with open(os.path.join(self.folder, "web", "MiSansLatinVF.woff2"), "wb") as f:
+            f.write(font)
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
+        c.request("GET", "/xrninsta/MiSansLatinVF.woff2")
+        r = c.getresponse()
+        self.assertEqual((r.status, r.getheader("Content-Type"), r.read()), (200, "font/woff2", font))
+        c.close()
+        self.assertIn("font-src 'self'", r.getheader("Content-Security-Policy").split("; "))
+
 
 if __name__ == "__main__":
     unittest.main()

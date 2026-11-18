@@ -97,6 +97,7 @@ WEB_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".svg": "image/svg+xml",
     ".webmanifest": "application/manifest+json",
+    ".woff2": "font/woff2",
 }
 WEB_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}")
 BASE_HEADERS = {
@@ -104,7 +105,7 @@ BASE_HEADERS = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Content-Security-Policy": (
-        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; "
         "manifest-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"
     ),
 }

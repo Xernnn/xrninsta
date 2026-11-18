@@ -29,20 +29,32 @@ also write to and refuse.
     python3 xrninsta.py import <export.xlsx> --data ~/xrninsta/data [--replace]
     python3 xrninsta.py check --config ~/.config/xrninsta/bot.json
     python3 xrninsta.py webhook-off --config ~/.config/xrninsta/bot.json
+    python3 xrninsta.py covers <zip or folder of Day_<n>.png> --data ~/xrninsta/data
+    python3 xrninsta.py covers-bot --config ~/.config/xrninsta/bot.json
+    python3 xrninsta.py check|webhook-off --covers --config ~/.config/xrninsta/bot.json [--data ...]
 
 bot.json is {"token": "<from BotFather>", "chat": "<the one chat it answers>"}, readable only by
-you; with no chat the bot answers none, and logs each update it ignores. `check` says which bot the token is and where Telegram sends its messages now. `webhook-off`
-is the switch from Apps Script: it stops Telegram posting to the script, so the messages come here.
+you; with no chat the bot answers none, and logs each update it ignores. `check` says which bot the
+token is and where Telegram sends its messages now. `webhook-off` is the switch from Apps Script: it
+stops Telegram posting to the script, so the messages come here.
+
+The daily cover (apps-script/coverbot.gs) is a second bot, the Daily Story Bot, with its own token
+under "covers" in bot.json ({"covers": {"token": ..., "chat": ...}}, which `covers-bot` writes). At
+2am Sydney time it sends that day's cover from <data>/covers, which `covers` fills; `--covers`
+points `check` and `webhook-off` at it.
 """
 import argparse
 import base64
+import datetime
 import fcntl
+import getpass
 import hashlib
 import hmac
 import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import threading
@@ -76,6 +88,18 @@ COMMANDS = [
     {"command": "search", "description": 'Tìm theo tên, artist, genre hoặc "day 26"'},
     {"command": "stats", "description": "Thống kê & quản lý OnHold"},
     {"command": "cancel", "description": "Huỷ thao tác đang dở"},
+    {"command": "start", "description": "Hướng dẫn sử dụng"},
+]
+
+# The daily cover (apps-script/coverbot.gs, the Daily Story Bot): a bot of its own, with its own token.
+COVER_ZONE = "Australia/Sydney"
+COVER_AT = (2, 0)  # 2am there, daylight saving or not, when the script's trigger ran
+COVER_EPOCH, COVER_EPOCH_DAY = datetime.date(2026, 10, 18), 263  # the script's START_DATE_STRING and START_DAY_NUMBER
+COVER_NAME = re.compile(r"Day_([0-9]{1,6})\.png")
+COVER_MAX_BYTES = 10 * 1024 * 1024  # the most Telegram takes for a photo
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+COVER_COMMANDS = [
+    {"command": "sendnow", "description": "Gửi ảnh của hôm nay ngay"},
     {"command": "start", "description": "Hướng dẫn sử dụng"},
 ]
 
@@ -387,6 +411,8 @@ class Store:
 # ---- Telegram ------------------------------------------------------------------------------------
 
 class Telegram:
+    base = "https://api.telegram.org"
+
     def __init__(self, token):
         self.token = token
 
@@ -394,8 +420,23 @@ class Telegram:
         """Telegram's answer as a dict ({"ok": false, ...} on a refusal), or None if it couldn't be
         reached. Like the script's muteHttpExceptions, a failed send never stops the bot."""
         data = json.dumps(payload or {}, ensure_ascii=False).encode()
-        req = urllib.request.Request(f"https://api.telegram.org/bot{self.token}/{method}", data=data,
-                                     headers={"Content-Type": "application/json"})
+        return self.post(method, data, "application/json", timeout)
+
+    def upload(self, method, fields, name, filename, content, timeout=60):
+        """[method] with a PNG: [fields] as the form's fields and [content] as its file [name]. The
+        cover goes up from disk, where the script handed Telegram a blob from Drive, so it needs no
+        public address."""
+        boundary = "xrninsta-" + secrets.token_hex(16)
+        parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+                 for k, v in fields.items()]
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                     "Content-Type: image/png\r\n\r\n".encode() + content + b"\r\n")
+        parts.append(f"--{boundary}--\r\n".encode())
+        return self.post(method, b"".join(parts), f"multipart/form-data; boundary={boundary}", timeout)
+
+    def post(self, method, data, ctype, timeout):
+        req = urllib.request.Request(f"{self.base}/bot{self.token}/{method}", data=data,
+                                     headers={"Content-Type": ctype})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 answer = json.loads(r.read())
@@ -1027,19 +1068,23 @@ class Poller:
     saved before an update is handled: one that crashes the bot is skipped next time rather than
     added twice, as the script's webhook, which always answered OK, also did."""
 
-    def __init__(self, store, bot):
+    def __init__(self, store, bot, name="bot", offset_key="offset", switch="webhook-off", chat_at="in bot.json"):
         self.store = store
         self.bot = bot
+        self.name = name  # in the log
+        self.offset_key = offset_key  # each bot keeps its own place in its own updates
+        self.switch = switch  # the xrninsta.py command that moves its messages here
+        self.chat_at = chat_at  # where bot.json names its chat
         self.status = {"state": "starting", "since": now_ms(), "lastPoll": None, "error": ""}
 
     def note(self, state, error=""):
         if self.status["state"] != state or self.status["error"] != error:
             self.status = {**self.status, "state": state, "since": now_ms(), "error": error}
-            log(f"bot: {state}{': ' + error if error else ''}")
+            log(f"{self.name}: {state}{': ' + error if error else ''}")
 
     def once(self):
         """One getUpdates; returns how long to wait before the next."""
-        offset = int_or(self.store.meta("offset"), 0)
+        offset = int_or(self.store.meta(self.offset_key), 0)
         r = self.bot.tg.call("getUpdates", {"offset": offset, "timeout": POLL_S,
                                             "allowed_updates": ["message", "callback_query"]}, timeout=POLL_S + 15)
         if r is None:
@@ -1052,7 +1097,7 @@ class Poller:
             # description tells them apart, and webhook-off does nothing for the second.
             if code == 409 and "webhook" in said.lower():
                 self.note("webhook", "Telegram still sends this bot's messages elsewhere (the Apps Script). "
-                                     "Run `xrninsta.py webhook-off` to move them here.")
+                                     f"Run `xrninsta.py {self.switch}` to move them here.")
                 return 30
             if code == 409:
                 self.note("twice", f"another copy of the bot is taking its messages; stop the old process ({said})")
@@ -1063,11 +1108,11 @@ class Poller:
         if self.bot.allowed:
             self.note("ok")
         else:
-            self.note("nochat", 'no "chat" in bot.json, so it answers no one')
+            self.note("nochat", f'no "chat" {self.chat_at}, so it answers no one')
         for update in r.get("result") or []:
             uid = update.get("update_id")
             if isinstance(uid, int) and uid >= offset:
-                self.store.set_meta("offset", uid + 1)
+                self.store.set_meta(self.offset_key, uid + 1)
                 self.bot.handle(update)
         return 0
 
@@ -1080,6 +1125,222 @@ class Poller:
                 wait = 15
             if wait:
                 time.sleep(wait)
+
+
+# ---- the daily cover -------------------------------------------------------------------------------
+
+def load_zone(name):
+    """The time zone, or None when Python has no data for it: Termux's has none without the tzdata
+    package, which deploy.sh installs."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except (ImportError, KeyError, ValueError, OSError):  # ZoneInfoNotFoundError is a KeyError
+        return None
+
+
+def cover_day(date):
+    """The cover's number for a day: 263 on 18 Oct 2026, one more for each day since."""
+    return COVER_EPOCH_DAY + (date - COVER_EPOCH).days
+
+
+def cover_file(day):
+    return f"Day_{day}.png"
+
+
+class Covers:
+    """coverbot.gs, the Daily Story Bot: at 2am Sydney time it sends that day's cover to its one
+    chat, and /sendnow sends it at once. The covers are covers/Day_<n>.png beside the songs, where
+    the script searched a Drive folder. It's a bot of its own, with its own token, and only knows
+    /start and /sendnow. Unlike the script it keeps a cover once sent (a year of them is 38 MB),
+    and it notes the day it last sent, so a restart never sends one twice and a server that was off
+    at 2am sends that day's when it's back."""
+
+    def __init__(self, store, tg, allowed_chat, folder, zone=None):
+        self.store = store
+        self.tg = tg
+        self.allowed = str(allowed_chat or "").strip()
+        self.folder = folder
+        self.zone = zone or load_zone(COVER_ZONE)
+        self.lock = threading.Lock()  # the 2am send and /sendnow, never both at once
+        self.status = {"state": "starting", "since": now_ms(), "sent": int_or(store.meta("cover_day"), 0), "error": ""}
+
+    def note(self, state, error=""):
+        if self.status["state"] != state or self.status["error"] != error:
+            self.status = {**self.status, "state": state, "since": now_ms(), "error": error}
+            log(f"covers: {state}{': ' + error if error else ''}")
+
+    def now(self):
+        return datetime.datetime.now(self.zone)
+
+    def send(self, text):
+        self.tg.call("sendMessage", {"chat_id": self.allowed, "text": text, "parse_mode": "HTML"})
+
+    def send_cover(self, day):
+        """Day <day>'s cover to the chat. True once it's settled: sent, or no such cover or a
+        refusal, both said in the chat as the script did. False when Telegram couldn't be reached,
+        so the next try sends it."""
+        name = cover_file(day)
+        try:
+            with open(os.path.join(self.folder, name), "rb") as f:
+                content = f.read()
+        except FileNotFoundError:
+            # The script's warning showed its <b> tags as they were: it sent no parse_mode.
+            self.send(f"⚠️ Không tìm thấy ảnh cho hôm nay: <b>{name}</b>\nBạn hãy chép thêm ảnh lên server nhé.")
+            self.note("missing", f"no {name} in {self.folder}")
+            return True
+        r = self.tg.upload("sendPhoto", {"chat_id": self.allowed, "caption": f"Day {day}'s cover"},
+                           "photo", name, content)
+        if r is None:
+            self.note("unreachable", "Telegram didn't answer")
+            return False
+        if not r.get("ok"):
+            self.send(f"❌ Lỗi khi gửi ảnh: {esc(r.get('description', ''))}")
+            self.note("refused", f"{r.get('error_code')}: {r.get('description', '')}")
+            return True
+        self.note("ok")
+        return True
+
+    def settle(self, day):
+        """Sends Day <day>'s cover and notes it as done; False if Telegram wasn't reached."""
+        with self.lock:
+            if not self.send_cover(day):
+                return False
+            self.store.set_meta("cover_day", day)
+            self.status["sent"] = day
+            return True
+
+    def first_start(self, now=None):
+        """The first time it runs, after 2am, the Apps Script has sent today's cover: it takes that
+        as sent, and starts with tomorrow's. /sendnow still sends it."""
+        if self.zone is None or self.store.meta("cover_day") is not None:
+            return
+        now = now or self.now()
+        if (now.hour, now.minute) >= COVER_AT:
+            day = cover_day(now.date())
+            self.store.set_meta("cover_day", day)
+            self.status["sent"] = day
+            log(f"covers: first start, after 2am: Day {day}'s cover is taken as sent by the Apps Script")
+
+    def tick(self, now=None):
+        """Sends today's cover if it's past 2am in Sydney and it hasn't gone yet; returns how long
+        to wait before looking again. The clock is read each minute, so the night the clocks go
+        forward (no 2am) it goes at 3, and the night they go back (2am twice) it goes once."""
+        if self.zone is None:
+            self.note("nozone", f"Python has no time zone data for {COVER_ZONE}; pip install tzdata")
+            return 3600
+        if not self.allowed:
+            self.note("nochat", 'no "chat" under "covers" in bot.json, so it sends no one a cover')
+            return 3600
+        now = now or self.now()
+        day = cover_day(now.date())
+        if (now.hour, now.minute) < COVER_AT or int_or(self.store.meta("cover_day"), 0) >= day:
+            return 60
+        return 60 if self.settle(day) else 300
+
+    def run(self):
+        while True:
+            try:
+                wait = self.tick()
+            except Exception as e:  # noqa: BLE001 - like the poller, the loop outlives anything one send does
+                self.note("error", f"{type(e).__name__}: {e}")
+                wait = 300
+            time.sleep(wait)
+
+    def handle(self, update):
+        msg = update.get("message") or {}
+        if not msg.get("text"):
+            return
+        chat = str((msg.get("chat") or {}).get("id", ""))
+        if not chat or chat != self.allowed:
+            if not self.allowed:
+                log(f'covers: update {update.get("update_id")} from chat {chat or "?"} ignored: no "chat" under "covers" in bot.json')
+            return
+        text = re.sub(r"^(/\w+)@\w+", r"\1", msg["text"].strip(), flags=re.ASCII)
+        cmd = re.match(r"/(\w+)\b", text, flags=re.ASCII)
+        command = cmd.group(1).lower() if cmd else None
+        try:
+            if command == "start":
+                self.send("🌅 Daily Story Bot đã sẵn sàng!\nNhập lệnh /sendnow để bot lấy và gửi ảnh của ngày hôm nay ngay lập tức.")
+            elif command == "sendnow":
+                if self.zone is None:
+                    self.send(f"⚠️ Server chưa có dữ liệu múi giờ {COVER_ZONE} (pip install tzdata).")
+                    return
+                self.send("⏳ Đang lấy ảnh, đợi chút nhé...")
+                self.settle(cover_day(self.now().date()))
+        except Exception as err:  # noqa: BLE001 - as the song bot does: say so in the chat, keep going
+            log(f"covers: update {update.get('update_id')}: {type(err).__name__}: {err}")
+            self.tg.call("sendMessage", {"chat_id": chat, "text": f"❌ CRASH LOG:\n{type(err).__name__}: {err}"})
+
+
+def covers_poller(store, covers):
+    """The Daily Story Bot's own poller: its place in its own updates, and its own switch."""
+    return Poller(store, covers, name="covers bot", offset_key="covers_offset", switch="webhook-off --covers",
+                  chat_at='under "covers" in bot.json')
+
+
+def cover_days(folder):
+    try:
+        names = os.listdir(folder)
+    except FileNotFoundError:
+        return []
+    return sorted(int(m.group(1)) for m in map(COVER_NAME.fullmatch, names) if m)
+
+
+def covers_summary(folder, today):
+    """How far the covers go from [today]'s, and what's missing on the way."""
+    ahead = [d for d in cover_days(folder) if d >= today]
+    if not ahead:
+        return f"Covers: none from Day {today} (today) on, in {folder}"
+    last = ahead[-1]
+    runs_out = COVER_EPOCH + datetime.timedelta(days=last - COVER_EPOCH_DAY)
+    said = f"Covers: Day {today} (today) to Day {last}, the last on {runs_out.day} {runs_out:%b %Y}"
+    if ahead[0] != today:
+        said += f"; today's ({cover_file(today)}) is missing"
+    gaps = last - today + 1 - len(ahead) - (ahead[0] != today)
+    if gaps:
+        said += f"; {gaps} more missing before the last"
+    return said
+
+
+def add_covers(folder, source):
+    """Copies each Day_<n>.png in [source] (a zip, as Drive downloads a folder, or a folder) into
+    the covers folder, by its name alone, wherever the zip had it. Anything else is skipped: other
+    names, macOS's ._ copies, files that aren't PNGs or are over Telegram's 10 MB."""
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    done = {"added": 0, "replaced": 0, "skipped": []}
+
+    def keep(name, opener):
+        base = name.replace("\\", "/").rsplit("/", 1)[-1]
+        if not COVER_NAME.fullmatch(base):
+            done["skipped"].append(name)
+            return
+        with opener() as f:
+            content = f.read(COVER_MAX_BYTES + 1)
+        if not content.startswith(PNG_SIGNATURE) or len(content) > COVER_MAX_BYTES:
+            done["skipped"].append(name)
+            return
+        path = os.path.join(folder, base)
+        done["replaced" if os.path.exists(path) else "added"] += 1
+        tmp = f"{path}.{os.getpid()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+
+    if os.path.isdir(source):
+        for name in sorted(os.listdir(source)):
+            path = os.path.join(source, name)
+            if os.path.isfile(path):
+                keep(name, lambda p=path: open(p, "rb"))
+    else:
+        with zipfile.ZipFile(source) as z:
+            for info in z.infolist():
+                if not info.is_dir():
+                    keep(info.filename, lambda i=info: z.open(i))
+    return done
 
 
 # ---- importing the sheet ---------------------------------------------------------------------------
@@ -1663,7 +1924,11 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             store = self.app["store"]
             if path == "/api/status":
-                return self.send_json(self.app["poller"].status if self.app["poller"] else {"state": "off", "error": "no bot token"})
+                status = dict(self.app["poller"].status) if self.app["poller"] else {"state": "off", "error": "no bot token"}
+                if self.app.get("covers"):
+                    covers, poller = self.app["covers"]
+                    status["covers"] = {"bot": poller.status, "send": covers.status}
+                return self.send_json(status)
             return self.send_json({"genres": GENRES, "colors": GENRE_COLORS, "nextDay": store.next_day(),
                                    "songs": store.songs(), "holds": store.holds()})
         if path.startswith("/api/"):
@@ -1772,12 +2037,57 @@ def read_config(path):
     return doc if isinstance(doc, dict) else {}
 
 
-def need_token(config_path):
+def need_token(config_path, covers=False):
     conf = read_config(config_path)
+    if covers:
+        conf = conf.get("covers") if isinstance(conf.get("covers"), dict) else {}
     token = str(conf.get("token") or "").strip()
+    if not token and covers:
+        raise SystemExit(f'no "covers" bot in {config_path}; it holds {{..., "covers": {{"token": "...", "chat": "..."}}}}')
     if not token:
         raise SystemExit(f'no bot token in {config_path}; it holds {{"token": "...", "chat": "..."}}')
     return token, str(conf.get("chat") or "").strip()
+
+
+def set_covers_bot(config_path, token, chat):
+    """Puts the Daily Story Bot's token and chat under "covers" in bot.json, keeping the rest."""
+    token, chat = token.strip(), chat.strip()
+    if not token:
+        raise SystemExit("No token; nothing was written.")
+    if not re.fullmatch(r"-?[0-9]{1,20}", chat):
+        raise SystemExit("The chat id is a number; nothing was written.")
+    path = os.path.expanduser(config_path)
+    conf = read_config(path)
+    if token == str(conf.get("token") or "").strip():
+        raise SystemExit("That's the song bot's token; the Daily Story Bot has one of its own. Nothing was written.")
+    conf["covers"] = {"token": token, "chat": chat}
+    tmp = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(conf, f, ensure_ascii=False)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def start_covers(store, conf, data, song_token):
+    """The Daily Story Bot, when bot.json has a "covers" bot: its 2am sends and its poller, each in
+    a thread. None when there's none."""
+    section = conf.get("covers") if isinstance(conf.get("covers"), dict) else {}
+    token = str(section.get("token") or "").strip()
+    if not token:
+        return None
+    if token == song_token:
+        # One token polled twice is two copies of one bot, each told by Telegram the other is running.
+        log('covers: the "covers" token is the song bot\'s; the Daily Story Bot has a token of its own')
+        return None
+    covers = Covers(store, Telegram(token), section.get("chat"), os.path.join(data, "covers"))
+    covers.first_start()
+    poller = covers_poller(store, covers)
+    threading.Thread(target=covers.run, daemon=True).start()
+    threading.Thread(target=poller.run, daemon=True).start()
+    return covers, poller
 
 
 def serve(args):
@@ -1791,6 +2101,7 @@ def serve(args):
     else:
         log(f"no bot token in {args.config}: the page runs, the bot doesn't")
     Handler.app = {"store": store, "login": Login(os.path.expanduser(args.users)), "poller": poller,
+                   "covers": start_covers(store, conf, os.path.expanduser(args.data), token),
                    "web": os.path.expanduser(args.web)}
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     srv.daemon_threads = True
@@ -1816,8 +2127,10 @@ def main(argv=None):
     if argv[:1] in (["check"], ["webhook-off"]):
         p = argparse.ArgumentParser(prog=f"xrninsta.py {argv[0]}")
         p.add_argument("--config", required=True)
+        p.add_argument("--covers", action="store_true", help='the Daily Story Bot ("covers" in bot.json), not the song bot')
+        p.add_argument("--data", help="with check --covers: where the covers folder is, to say how far they go")
         a = p.parse_args(argv[1:])
-        token, chat = need_token(a.config)
+        token, chat = need_token(a.config, a.covers)
         tg = Telegram(token)
         if argv[0] == "check":
             me = tg.call("getMe") or {}
@@ -1825,18 +2138,46 @@ def main(argv=None):
             if not me.get("ok"):
                 raise SystemExit(f"Telegram refused the token: {me.get('description', 'no answer')}")
             url = (hook.get("url") or "").partition("?")[0]  # the rest is the script's key
-            who = chat or 'no one (set "chat" in bot.json)'
+            who = chat or ('no one (set "chat" under "covers" in bot.json)' if a.covers else 'no one (set "chat" in bot.json)')
             print(f"Bot: @{me['result'].get('username')} · answers {who}")
             if url:
                 print(f"Messages go to: {url} (the Apps Script) · {hook.get('pending_update_count', 0)} waiting")
             else:
                 print("Messages go to: whoever asks, which is this server")
+            if a.covers:
+                zone = load_zone(COVER_ZONE)
+                if zone is None:
+                    print(f"Time zone: Python has no data for {COVER_ZONE}, so no cover goes out (pip install tzdata)")
+                elif a.data:
+                    today = cover_day(datetime.datetime.now(zone).date())
+                    print(covers_summary(os.path.join(os.path.expanduser(a.data), "covers"), today))
             return
         r = tg.call("deleteWebhook", {"drop_pending_updates": False}) or {}
         if not r.get("ok"):
             raise SystemExit(f"Telegram didn't take it: {r.get('description', 'no answer')}")
-        tg.call("setMyCommands", {"commands": COMMANDS})
+        tg.call("setMyCommands", {"commands": COVER_COMMANDS if a.covers else COMMANDS})
         print("Done: Telegram stops posting to the Apps Script, and the bot here picks messages up within a minute.")
+        return
+    if argv[:1] == ["covers-bot"]:
+        p = argparse.ArgumentParser(prog="xrninsta.py covers-bot",
+                                    description="asks for the Daily Story Bot's token and chat, and puts them in bot.json")
+        p.add_argument("--config", required=True)
+        a = p.parse_args(argv[1:])
+        set_covers_bot(a.config, getpass.getpass("Daily Story Bot token: "), input("Chat id: "))
+        print(f'Written under "covers" in {a.config}. Restart xrninsta to start the bot.')
+        return
+    if argv[:1] == ["covers"]:
+        p = argparse.ArgumentParser(prog="xrninsta.py covers", description="add covers: Day_<n>.png files, from a zip or a folder")
+        p.add_argument("source", help="a zip (as Drive downloads a folder) or a folder")
+        p.add_argument("--data", required=True)
+        a = p.parse_args(argv[1:])
+        folder = os.path.join(os.path.expanduser(a.data), "covers")
+        r = add_covers(folder, a.source)
+        print(f"Added {r['added']} covers, replaced {r['replaced']}." +
+              (f" Skipped {len(r['skipped'])}: {', '.join(r['skipped'][:5])}{' …' if len(r['skipped']) > 5 else ''}" if r["skipped"] else ""))
+        zone = load_zone(COVER_ZONE)
+        if zone is not None:
+            print(covers_summary(folder, cover_day(datetime.datetime.now(zone).date())))
         return
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--host", default="127.0.0.1")

@@ -1823,6 +1823,17 @@ class Handler(BaseHTTPRequestHandler):
         line = f"{who} {fmt % a}"
         sys.stderr.write("".join(c if c.isprintable() else f"\\x{ord(c):02x}" for c in line) + "\n")
 
+    def handle(self):
+        # A caller hanging up, mid-upload or between requests, is the network, not a fault here:
+        # a page closed, a phone losing its signal. One line says so; socketserver printed some 15
+        # lines of traceback for each (118 on 15 and 16 Nov), which xrnhub's log page counts as
+        # an error.
+        try:
+            super().handle()
+        except ConnectionError as e:
+            self.close_connection = True
+            self.log_message("connection dropped: %s", type(e).__name__)
+
     def route(self):
         path = self.path.partition("?")[0]
         if path == PREFIX or path.startswith(PREFIX + "/"):
@@ -1860,6 +1871,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send(413, "body missing or too large")
             return None
         raw = self.rfile.read(length)
+        if len(raw) < length:
+            # The connection closed part way: what came is no record, so it isn't read as one.
+            self.close_connection = True
+            self.send(400, "the upload stopped short")
+            return None
         self.body_read = True
         try:
             return json.loads(raw)

@@ -1,16 +1,18 @@
 // xrninsta's page: the sheet's Dashboard, its Songs and its OnHold, on the home server.
 // Everything a person typed goes in through textContent: the host is shared with other apps' pages.
 
-import { dashboard, holdList, secondClick, songList } from './model.js';
+import { dashboard, failLabel, holdList, secondClick, songList } from './model.js';
 
 const $ = (sel) => document.querySelector(sel);
 const CLIENT = { 'X-Xrn-Client': 'xrninsta' };
 const BOT_WORDS = {
-  webhook: "The bot isn't taking messages yet: Telegram still sends them to the Apps Script. Run webhook-off on the server to move them here.",
-  off: 'The bot has no token yet, so only this page is running.',
-  unreachable: "The bot can't reach Telegram at the moment. It keeps trying.",
-  refused: 'Telegram refused the bot',
-  error: 'The bot ran into a problem',
+  webhook: 'Bot: messages still go to the Apps Script (run webhook-off)',
+  off: 'Bot off: no token in bot.json',
+  nochat: 'Bot off: no chat in bot.json',
+  twice: 'Bot: two copies running',
+  unreachable: "Bot: can't reach Telegram",
+  refused: 'Bot: Telegram refused it',
+  error: 'Bot error',
 };
 // A mouse and keyboard: put the cursor in a row that opens. On a phone that would pop the keyboard.
 const POINTER = matchMedia('(hover: hover) and (pointer: fine)');
@@ -116,11 +118,26 @@ document.addEventListener('keydown', (e) => {
 
 // ---- signing in --------------------------------------------------------------------------------
 
-function showSignin() {
+function showSignin(label) {
   $('#app').hidden = true;
+  $('#failed').hidden = true;
   $('#signin').hidden = false;
+  $('#signin-error').textContent = label || '';
+  $('#signin-error').hidden = !label;
   $('#signin [name=user]').focus();
 }
+
+// A load that failed, for any reason but a missing sign-in: both sections started hidden, so the
+// page used to stay blank behind an alert, with no way back but reloading it.
+function showFailure(err) {
+  if (err.status === 403) { showSignin(failLabel(403)); return; }
+  $('#app').hidden = true;
+  $('#signin').hidden = true;
+  $('#failed-label').textContent = failLabel(err.status);
+  $('#failed').hidden = false;
+}
+
+$('#retry').addEventListener('click', () => load());
 
 $('#signin').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -134,7 +151,7 @@ $('#signin').addEventListener('submit', async (e) => {
     form.password.value = '';
     await load();
   } catch (err) {
-    error.textContent = err.status === 401 ? "That name and password don't match." : err.status === 403 ? 'These songs belong to the server owner.' : err.message;
+    error.textContent = failLabel(err.status);
     error.hidden = false;
   }
 });
@@ -150,10 +167,11 @@ async function load() {
   try {
     data = await api('api/data');
   } catch (err) {
-    if (!(err instanceof Stop)) alert(err.message);
+    if (!(err instanceof Stop)) showFailure(err);
     return;
   }
   $('#signin').hidden = true;
+  $('#failed').hidden = true;
   $('#app').hidden = false;
   if (!$('#artist-genre').options.length) {
     genreSelect($('#artist-genre'), { all: true });
@@ -162,7 +180,6 @@ async function load() {
   }
   const day = $('#add-song [name=day]');
   day.placeholder = String(data.nextDay);
-  day.title = `Leave it empty for the next day, ${data.nextDay}`;
   const valid = data.songs.filter((s) => data.genres.includes(s.genre)).length;
   $('#counts').textContent = `${valid} songs · ${data.holds.length} on hold`;
   render();
@@ -185,6 +202,7 @@ function render() {
 // ---- the Dashboard --------------------------------------------------------------------------------
 
 function renderArtists() {
+  stale.delete('artists');
   const genre = $('#artist-genre').value || 'ALL';
   const board = dashboard(data, { genre, oldest: $('#artist-sort').value === 'old', words: $('#find').value });
 
@@ -192,11 +210,11 @@ function renderArtists() {
   // filled with its genre's colour. A song double-clicked opens in Songs to be fixed.
   const table = $('#artists');
   for (const body of [...table.tBodies]) body.remove();
-  if (!board.artists.length) table.append(el('tbody', {}, emptyRow(3, 'No songs here.')));
+  if (!board.artists.length) table.append(el('tbody', {}, emptyRow(3, 'No songs')));
   for (const artist of board.artists) {
     table.append(el('tbody', { class: 'group' },
       el('tr', { class: 'artist' }, el('th', { colspan: 3, scope: 'rowgroup', text: `${artist.name} (${artist.songs.length})` })),
-      artist.songs.map((s) => el('tr', { class: 'rec', title: 'Double-click to fix it in Songs', onclick: opens(`board:${s.id}`, () => openSong(s.id)), onmousedown: keepWords },
+      artist.songs.map((s) => el('tr', { class: 'rec', onclick: opens(`board:${s.id}`, () => openSong(s.id)), onmousedown: keepWords },
         el('td', { class: 'indent' }),
         tint(el('td', { text: s.title }), s.genre),
         el('td', { class: 'day', text: `Day ${s.day}` }))),
@@ -242,11 +260,12 @@ function songFilters() {
 }
 
 function renderSongs() {
+  stale.delete('songs');
   const rows = songList(data, songFilters());
   $('#song-count').textContent = rows.length === data.songs.length ? `${rows.length} songs` : `${rows.length} of ${data.songs.length} songs`;
   $('#songs').replaceChildren(...(rows.length
     ? rows.map((s) => (open === `song:${s.id}` ? songForm(s) : songRow(s)))
-    : [emptyRow(5, 'No song matches.')]));
+    : [emptyRow(5, 'No songs')]));
 }
 
 function songRow(s) {
@@ -271,7 +290,7 @@ function songForm(s) {
     el('div', { class: 'actions' },
       el('button', { class: 'primary small', text: 'Save' }),
       el('button', { type: 'button', class: 'quiet small', text: 'Cancel', onclick: () => closeEditor() }),
-      data.genres.includes(s.genre) ? null : el('span', { class: 'error', text: `"${s.genre}" isn't a genre the bot knows; pick one to save.` }),
+      data.genres.includes(s.genre) ? null : el('span', { class: 'error', text: `Unknown genre "${s.genre}"` }),
       el('span', { class: 'spacer' }),
       el('button', { type: 'button', class: 'danger small', text: 'Delete', onclick: () => remove('songs', s, `Delete "${s.title}"?`) })));
   form.addEventListener('submit', (e) => {
@@ -282,8 +301,21 @@ function songForm(s) {
   return el('tr', { class: 'editing' }, el('td', { colspan: 5 }, form));
 }
 
-// Find, at the top right, narrows every tab at once, so switching tab keeps what was asked for.
-$('#find').addEventListener('input', () => { if (data) render(); });
+// Find, at the top right, narrows every tab at once, so switching tab keeps what was asked for. Only
+// the tab on show is rebuilt as it's typed into, once typing pauses; the others catch up when shown.
+// Rebuilding all three on every key took about 60 ms a key with 2,000 songs on a slow phone.
+const stale = new Set();
+const RENDER = { artists: () => renderArtists(), songs: () => renderSongs(), holds: () => renderHolds() };
+let findTimer = 0;
+$('#find').addEventListener('input', () => {
+  clearTimeout(findTimer);
+  findTimer = setTimeout(() => {
+    if (!data) return;
+    const shown = document.querySelector('[role=tab][aria-selected=true]')?.dataset.tab || 'artists';
+    for (const name of Object.keys(RENDER)) if (name !== shown) stale.add(name);
+    RENDER[shown]();
+  }, 100);
+});
 // / or Ctrl+F goes to it, as in a sheet, unless something else is being typed into.
 document.addEventListener('keydown', (e) => {
   if ($('#app').hidden) return;
@@ -316,6 +348,7 @@ $('#add-song').addEventListener('submit', async (e) => {
 // ---- OnHold ---------------------------------------------------------------------------------------
 
 function renderHolds() {
+  stale.delete('holds');
   const n = data.holds.length;
   const rows = holdList(data, { words: $('#find').value });
   const total = n === 1 ? '1 song on hold' : `${n} songs on hold`;
@@ -324,7 +357,7 @@ function renderHolds() {
     if (open === `hold:${h.id}`) return holdForm(h);
     if (open === `promote:${h.id}`) return promoteForm(h);
     return holdRow(h);
-  }) : [emptyRow(4, n ? 'Nothing on hold matches.' : 'Nothing on hold.')]));
+  }) : [emptyRow(4, 'Nothing on hold')]));
 }
 
 function holdRow(h) {
@@ -366,7 +399,7 @@ function promoteForm(h) {
     field('Artist(s)', el('input', { name: 'artists', value: h.artists, required: true, maxlength: 300 })),
     el('span', { class: 'pair' },
       field('Genre', genre),
-      field('Day No', el('input', { name: 'day', type: 'number', step: 1, placeholder: String(data.nextDay), title: `Leave it empty for the next day, ${data.nextDay}`, inputmode: 'numeric' }))),
+      field('Day No', el('input', { name: 'day', type: 'number', step: 1, placeholder: String(data.nextDay), inputmode: 'numeric' }))),
     el('span', { class: 'go' },
       el('button', { class: 'primary small', text: 'Add to songs' }),
       el('button', { type: 'button', class: 'quiet small', text: 'Cancel', onclick: () => closeEditor() })));
@@ -401,13 +434,21 @@ for (const opener of document.querySelectorAll('.opener')) {
 
 // ---- writing ----------------------------------------------------------------------------------------
 
-async function send(path, opts) {
+// [record] is the one a form is fixing: a save that lost a race with the bot keeps that form and
+// what was typed in it, with the record's tag moved on, so Save again puts it on top. Reloading
+// closed the form and threw the typing away.
+async function send(path, opts, record) {
   try {
     await api(path, opts);
   } catch (err) {
     if (err instanceof Stop) return false;
-    if (err.status === 412) alert('That changed somewhere else since you opened it. Showing it as it is now.');
-    else if (err.status === 404) alert('That has gone: it was deleted somewhere else.');
+    if (err.status === 412 && record && err.doc && err.doc.current) {
+      record.updated = err.doc.current.updated;
+      alert('Changed elsewhere. Save again to keep yours.');
+      return false;
+    }
+    if (err.status === 412) alert('Changed elsewhere');
+    else if (err.status === 404) alert('Deleted elsewhere');
     else { alert(err.message); return false; }
   }
   open = null;
@@ -416,7 +457,7 @@ async function send(path, opts) {
 }
 
 function change(table, record, body) {
-  return send(`api/${table}/${record.id}`, { method: 'PUT', body, tag: record.updated });
+  return send(`api/${table}/${record.id}`, { method: 'PUT', body, tag: record.updated }, record);
 }
 
 function remove(table, record, question) {
@@ -429,6 +470,7 @@ function showTab(name) {
   for (const b of document.querySelectorAll('[role=tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
   for (const s of document.querySelectorAll('.tab')) s.hidden = s.id !== `tab-${name}`;
   try { localStorage.setItem('xrninsta.tab', name); } catch { /* private window */ }
+  if (data && stale.has(name)) RENDER[name]();
 }
 
 for (const b of document.querySelectorAll('[role=tab]')) b.addEventListener('click', () => showTab(b.dataset.tab));

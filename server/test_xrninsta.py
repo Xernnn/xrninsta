@@ -3,12 +3,14 @@
 Every song and name here is made up. Run: python3 -m unittest test_xrninsta (from server/).
 """
 import base64
+import concurrent.futures
 import http.client
 import json
 import os
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from http.server import ThreadingHTTPServer
@@ -107,6 +109,19 @@ class Adding(Base):
         self.tap("add_USUK")
         self.assertEqual(self.store.songs()[0]["artists"], "Some Singer")
 
+    def test_a_question_left_unanswered_for_an_hour_lapses(self):
+        # Days after "Artist(s)?" went unanswered, a whole new song became that old title's artist.
+        self.say("Lonely Title")
+        later = x.now_ms() + (x.WAIT_KEEP_S + 5) * 1000
+        with mock.patch.object(x, "now_ms", return_value=later):
+            self.say("Fresh Song\nSomeone\nvpop")
+        self.assertEqual(self.titles(), ["Fresh Song"])
+        self.store.clear_state(str(USER))
+        self.say("/hold")
+        with mock.patch.object(x, "now_ms", return_value=x.now_ms() + (x.WAIT_KEEP_S + 5) * 1000):
+            self.say("Another\nSomeone\nkpop")
+        self.assertEqual((self.titles()[-1], self.store.holds()), ("Another", []))
+
     def test_a_likely_duplicate_asks_first_and_can_be_added_anyway(self):
         self.song("Đường Về Nhà", "Ca Sĩ Mẫu")
         self.say("Duong ve nha\nca si mau\nvpop")
@@ -149,9 +164,60 @@ class Adding(Base):
         self.assertEqual(self.titles(), [])
         self.assertIn("Không có lệnh này", self.tg.last_text())
 
+    def test_a_command_that_only_starts_like_a_real_one_is_unknown(self):
+        # "/adds Em" passed startswith("/add"), missed the ^/add\b strip, and became a title.
+        for text in ("/adds Em", "/holdx Rain", "/searching day 2", "/statsx", "/cancelled"):
+            self.say(text)
+            self.assertIn("Không có lệnh này", self.tg.last_text(), text)
+        self.assertEqual((self.titles(), self.store.holds(), self.store.get_state(str(USER))), ([], [], None))
+        self.say("/ADD Night Bus\nAlex Example\nvpop")  # a real one, any case
+        self.say("/Hold\nLater")
+        self.assertEqual((self.titles(), [h["title"] for h in self.store.holds()]), (["Night Bus"], ["Later"]))
+
     def test_html_in_a_title_is_escaped(self):
         self.say("<b>&Co</b>\nA & B\nmisc")
         self.assertIn("&lt;b&gt;&amp;Co&lt;/b&gt;", self.tg.last_text())
+
+    def test_a_line_longer_than_the_page_takes_is_refused(self):
+        # A pasted paragraph became a title the page's Fix couldn't save, and its reply passed
+        # Telegram's limit, so nothing was said at all.
+        self.say("x" * 201 + "\nSomeone\nvpop")
+        self.assertEqual(self.titles(), [])
+        self.assertEqual(self.tg.last_text(), f"⚠️ Tên bài dài hơn {x.MAX_TITLE} ký tự.")
+        self.say("Fine\n" + "a" * 301)
+        self.assertIn(f"Artist dài hơn {x.MAX_ARTISTS}", self.tg.last_text())
+        self.assertIsNone(self.store.get_state(str(USER)))
+        self.say("Lonely Title")
+        self.say("a" * 301)  # the answer to "Artist(s)?"
+        self.assertIn(f"Artist dài hơn {x.MAX_ARTISTS}", self.tg.last_text())
+        self.assertEqual(self.store.get_state(str(USER))["step"], "await_artist")
+        self.say("/cancel")
+        self.say("x" * 200 + "\nSomeone\nvpop")
+        self.assertEqual(self.titles(), ["x" * 200])
+
+    def test_a_hold_longer_than_the_page_takes_is_refused(self):
+        self.say("/hold Later\nSomeone\n" + "n" * 1001)
+        self.assertEqual(self.store.holds(), [])
+        self.assertEqual(self.tg.last_text(), f"⚠️ Ghi chú dài hơn {x.MAX_NOTE} ký tự.")
+
+
+class TelegramAnswers(unittest.TestCase):
+    def refusal(self, method):
+        body = json.dumps({"ok": False, "error_code": 400, "description": "Bad Request: message is too long"}).encode()
+        err = x.urllib.error.HTTPError("https://api.telegram.org/", 400, "Bad Request", {}, None)
+        err.read = lambda: body
+        with mock.patch.object(x.urllib.request, "urlopen", side_effect=err), mock.patch.object(x, "log") as logged:
+            answer = x.Telegram("token").call(method, {"chat_id": 1, "text": "hi"})
+        return answer, [c.args[0] for c in logged.call_args_list]
+
+    def test_a_refusal_is_logged_with_the_method_and_why(self):
+        answer, lines = self.refusal("sendMessage")
+        self.assertFalse(answer["ok"])
+        self.assertEqual(lines, ["telegram sendMessage refused: 400: Bad Request: message is too long"])
+
+    def test_a_refused_poll_is_left_to_the_poller(self):
+        # The poller notes it once per change; logging every 30 s retry would bury everything else.
+        self.assertEqual(self.refusal("getUpdates")[1], [])
 
 
 class Holding(Base):
@@ -259,6 +325,25 @@ class Guarding(Base):
         self.assertEqual(self.titles(), [])
         self.assertEqual(self.tg.calls, [])
 
+    def test_no_chat_in_bot_json_answers_no_one(self):
+        # An empty "chat" (Enter at the setup prompt, or the key lost) once let anyone add, list and delete.
+        self.bot = x.Bot(self.store, self.tg, "")
+        with mock.patch.object(x, "log") as logged:
+            self.say("Sneaky\nSomeone\nvpop", chat="999")
+            self.tap("stats_genre", chat="999")
+        self.assertEqual(self.titles(), [])
+        self.assertEqual(self.tg.calls, [])
+        lines = [c.args[0] for c in logged.call_args_list]
+        self.assertEqual(len(lines), 2)
+        self.assertIn('no "chat"', lines[0])
+        self.assertIn("999", lines[0])
+        self.assertNotIn("Sneaky", " ".join(lines))  # what was sent stays out of the log
+
+    def test_the_status_says_when_no_chat_is_set(self):
+        poller = x.Poller(self.store, x.Bot(self.store, self.tg, " "))
+        poller.once()
+        self.assertEqual(poller.status["state"], "nochat")
+
     def test_a_crash_is_reported_in_the_chat(self):
         with mock.patch.object(self.bot, "try_add", side_effect=RuntimeError("boom")):
             self.say("A\nB\nvpop")
@@ -290,10 +375,66 @@ class Polling(Base):
 
     def test_a_webhook_still_set_is_said_plainly(self):
         poller = x.Poller(self.store, self.bot)
-        self.tg.updates = [{"ok": False, "error_code": 409, "description": "Conflict"}]
+        self.tg.updates = [{"ok": False, "error_code": 409, "description": "Conflict: can't use getUpdates method while "
+                                                                             "webhook is active; use deleteWebhook to delete the webhook first"}]
         self.assertEqual(poller.once(), 30)
         self.assertEqual(poller.status["state"], "webhook")
         self.assertIn("webhook-off", poller.status["error"])
+
+    def test_a_second_copy_of_the_bot_is_not_taken_for_the_webhook(self):
+        # Telegram answers 409 to both; a copy left running under PID 1 was told to run webhook-off.
+        poller = x.Poller(self.store, self.bot)
+        self.tg.updates = [{"ok": False, "error_code": 409, "description": "Conflict: terminated by other getUpdates "
+                                                                             "request; make sure that only one bot instance is running"}]
+        self.assertEqual(poller.once(), 30)
+        self.assertEqual(poller.status["state"], "twice")
+        self.assertNotIn("webhook", poller.status["error"])
+
+
+class Deploying(unittest.TestCase):
+    """deploy.sh in a throwaway clone of this repo, with an ssh that only notes it was called."""
+
+    def setUp(self):
+        import subprocess
+        self.run_ = subprocess.run
+        self.folder = tempfile.mkdtemp(prefix="xrninsta-deploy-")
+        self.addCleanup(shutil.rmtree, self.folder)
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.clone = os.path.join(self.folder, "repo")
+        subprocess.run(["git", "clone", "-q", repo, self.clone], check=True)
+        shutil.copy(os.path.join(repo, "server", "deploy.sh"), os.path.join(self.clone, "server"))  # as it is now
+        # deploy.sh runs the tests first; these would run this test again.
+        with open(os.path.join(self.clone, "server", "test_xrninsta.py"), "w") as f:
+            f.write("import unittest\n\n\nclass Stand(unittest.TestCase):\n    def test_in(self):\n        pass\n")
+        bin_ = os.path.join(self.folder, "bin")
+        os.makedirs(bin_)
+        self.calls = os.path.join(self.folder, "ssh-calls")
+        with open(os.path.join(bin_, "ssh"), "w") as f:
+            f.write(f'#!/bin/sh\necho "$*" >> {self.calls}\ncat >/dev/null\nexit 1\n')
+        os.chmod(os.path.join(bin_, "ssh"), 0o755)
+        self.env = {**os.environ, "PATH": bin_ + os.pathsep + os.environ["PATH"]}
+
+    def deploy(self, *args):
+        r = self.run_(["sh", os.path.join(self.clone, "server", "deploy.sh"), *args], env=self.env,
+                      capture_output=True, text=True, timeout=60)
+        return r.returncode, r.stdout + r.stderr, os.path.exists(self.calls)
+
+    def test_uncommitted_changes_to_what_goes_up_are_refused(self):
+        # It copied the working tree as it was: a half-done edit went live with no commit naming it.
+        with open(os.path.join(self.clone, "web", "app.js"), "a") as f:
+            f.write("// half done\n")
+        code, said, reached = self.deploy("somehost")
+        self.assertEqual((code, reached), (1, False), said)
+        self.assertIn("web/app.js", said)
+        code, said, reached = self.deploy("--force", "somehost")
+        self.assertTrue(reached, said)  # past the check, to the (stub) server
+        self.assertIn("with uncommitted changes", said)
+
+    def test_a_clean_tree_goes_up_and_says_which_commit(self):
+        head = self.run_(["git", "-C", self.clone, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+        code, said, reached = self.deploy("somehost")
+        self.assertTrue(reached, said)
+        self.assertIn(f"at {head}", said)
 
 
 def write_xlsx(path, sheets):
@@ -442,6 +583,26 @@ class Page(unittest.TestCase):
                      {"title": "x" * 201, "artists": "A", "genre": "VPOP"}, ["not", "an", "object"]):
             self.assertEqual(self.call("POST", "/api/songs", body)[0], 400, body)
 
+    def raw(self, method, path, data):
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
+        c.request(method, path, body=data, headers={"Authorization": "Basic " + base64.b64encode(b"owner:pw").decode()})
+        try:
+            r = c.getresponse()
+            r.read()
+            return r.status
+        except (http.client.HTTPException, OSError) as e:
+            return type(e).__name__
+        finally:
+            c.close()
+
+    def test_a_body_json_takes_but_the_server_cant_store_is_a_400(self):
+        # A lone surrogate passed every check and broke in SQLite; a deep enough nesting broke the
+        # parser with RecursionError. Both dropped the connection with a traceback in the log.
+        self.assertEqual(self.raw("POST", "/api/holds", b'{"title": "\\ud800"}'), 400)
+        self.assertEqual(self.raw("POST", "/api/songs", b'{"title": "A", "artists": "B\\udfff", "genre": "VPOP"}'), 400)
+        self.assertEqual(self.raw("POST", "/api/holds", b"[" * 30000 + b"]" * 30000), 400)
+        self.assertEqual((self.store.songs(), self.store.holds()), ([], []))
+
     def test_a_hold_becomes_a_song_in_one_go(self):
         status, hold = self.call("POST", "/api/holds", {"title": "Later", "artists": "", "note": "line one\nline two"})
         self.assertEqual((status, hold["note"]), (201, "line one\nline two"))
@@ -449,6 +610,73 @@ class Page(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertEqual(self.store.holds(), [])
         self.assertEqual(self.call("POST", "/api/songs", {"title": "L", "artists": "S", "genre": "MISC", "fromHold": hold["id"]})[0], 400)
+
+    def guess_as(self, name, password, addr):
+        auth = "Basic " + base64.b64encode(f"{name}:{password}".encode()).decode()
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
+        c.request("GET", "/api/data", headers={"Authorization": auth, "X-Forwarded-For": addr})
+        r = c.getresponse()
+        r.read()
+        c.close()
+        return r.status
+
+    def test_a_right_login_clears_only_its_own_users_mistakes(self):
+        # A right login wiped the whole address's count: guesses at another name from the same
+        # address started over with every login of the first.
+        login, addr = x.Handler.app["login"], "203.0.113.80"
+        for _ in range(5):
+            self.assertEqual(401, self.guess_as("admin", "nope", addr))
+        for _ in range(4):
+            self.assertEqual(401, self.guess_as("owner", "nope", addr))
+        login.cache.clear()
+        self.assertEqual(200, self.guess_as("owner", "pw", addr))  # owner's four go, admin's five stay
+        for _ in range(x.FAIL_LIMIT - 5):
+            self.assertEqual(401, self.guess_as("admin", "nope", addr))
+        self.assertEqual(429, self.guess_as("admin", "nope", addr))
+
+    def test_a_password_already_found_right_clears_nothing(self):
+        # A browser or script at the same address as a guesser cleared the guesser's count with
+        # every request. A password the server already knows is right (its cache) is a session.
+        addr = "203.0.113.81"
+        self.assertEqual(200, self.guess_as("owner", "pw", addr))
+        for _ in range(x.FAIL_LIMIT - 1):
+            self.assertEqual(401, self.guess_as("owner", "nope", addr))
+            self.assertEqual(200, self.guess_as("owner", "pw", addr))
+        self.assertEqual(401, self.guess_as("owner", "nope", addr))
+        self.assertEqual(429, self.guess_as("owner", "nope", addr))
+
+    def test_a_login_in_flight_is_not_a_wrong_guess(self):
+        # Counted as wrong before it was checked, a right login being checked took a place: two
+        # sign-ins at once, at an address with a few mistakes behind it, got a 429.
+        login, addr = x.Handler.app["login"], "203.0.113.82"
+        real = login.check_basic
+
+        def slow(header):
+            time.sleep(0.3)
+            return real(header)
+
+        with mock.patch.object(x, "FAIL_LIMIT", 3):
+            self.assertEqual(401, self.guess_as("owner", "nope", addr))
+            self.assertEqual(401, self.guess_as("owner", "nope", addr))  # one place left
+            login.cache.clear()
+            start = threading.Barrier(2)
+
+            def sign_in(_):
+                start.wait()
+                return self.guess_as("owner", "pw", addr)
+
+            with mock.patch.object(login, "check_basic", slow), concurrent.futures.ThreadPoolExecutor(2) as pool:
+                self.assertEqual([200, 200], list(pool.map(sign_in, range(2))))
+
+    def test_addresses_whose_mistakes_are_old_are_forgotten(self):
+        # Each address that ever got a password wrong stayed in memory for good.
+        login = x.Handler.app["login"]
+        long_ago = time.monotonic() - x.FAIL_WINDOW_S - 1
+        for i in range(10001):
+            login.failures[f"198.51.{i // 256}.{i % 256}"] = [(long_ago, "owner")]
+        self.assertTrue(login.reserve_guess("203.0.113.90"))
+        login.settle_guess("203.0.113.90", "owner", False)
+        self.assertEqual(list(login.failures), ["203.0.113.90"])
 
     def test_a_write_from_another_sites_page_is_refused(self):
         status, _ = self.call("POST", "/api/holds", {"title": "x"}, headers={"Sec-Fetch-Site": "cross-site"})

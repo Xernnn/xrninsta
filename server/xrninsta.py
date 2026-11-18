@@ -28,7 +28,7 @@ the shared sign-in cookie with an X-Xrn-Client header. Any other path serves web
     python3 xrninsta.py webhook-off --config ~/.config/xrninsta/bot.json
 
 bot.json is {"token": "<from BotFather>", "chat": "<the one chat it answers>"}, readable only by
-you. `check` says which bot the token is and where Telegram sends its messages now. `webhook-off`
+you; with no chat the bot answers none, and logs each update it ignores. `check` says which bot the token is and where Telegram sends its messages now. `webhook-off`
 is the switch from Apps Script: it stops Telegram posting to the script, so the messages come here.
 """
 import argparse
@@ -62,6 +62,7 @@ DUP_TITLE_MIN, DUP_ARTIST_MIN = 0.90, 0.88
 ONHOLD_PER_PAGE = 8
 SEARCH_PER_PAGE = 5
 SEARCH_KEEP_S = 21600  # a search's pages turn for 6 hours after the last turn
+WAIT_KEEP_S = 3600  # a question waiting for typed text (an artist, a song to hold or find) lapses after an hour
 BACK_TO_STATS = {"text": "↩️ Quay lại", "callback_data": "stats_menu"}
 EXPIRED = "⌛ Phiên đã hết hạn, gửi lại bài nhé."
 BUSY = "⚠️ Hệ thống bận, vui lòng thử lại sau."
@@ -342,8 +343,11 @@ class Store:
             self.db.execute(f"DELETE FROM {table} WHERE id = ?", (rid,))
             return True
 
-    def get_state(self, user):
-        found = self.rows("SELECT state FROM chat_state WHERE user = ?", (user,))
+    def get_state(self, user, newer_than=None):
+        """The user's step in a conversation, or None; with [newer_than] (ms), None if it's older."""
+        found = self.rows("SELECT state, at FROM chat_state WHERE user = ?", (user,))
+        if found and newer_than is not None and found[0]["at"] < newer_than:
+            return None
         try:
             return json.loads(found[0]["state"]) if found else None
         except ValueError:
@@ -390,15 +394,22 @@ class Telegram:
                                      headers={"Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read())
+                answer = json.loads(r.read())
         except urllib.error.HTTPError as e:
             try:
-                return json.loads(e.read())
+                answer = json.loads(e.read())
             except ValueError:
-                return {"ok": False, "error_code": e.code, "description": str(e)}
+                answer = {"ok": False, "error_code": e.code, "description": str(e)}
         except (OSError, ValueError) as e:
             log(f"telegram {method}: {type(e).__name__}: {e}")
             return None
+        if not isinstance(answer, dict):
+            answer = {"ok": False, "description": "not a JSON object"}
+        # A refused send left no trace: a reply over the length limit, or a rate limit (429), and
+        # the chat simply heard nothing. getUpdates' refusals are the poller's to report, once each.
+        if not answer.get("ok") and method != "getUpdates":
+            log(f"telegram {method} refused: {answer.get('error_code')}: {answer.get('description', '')}")
+        return answer
 
 
 def log(text):
@@ -440,12 +451,21 @@ class Bot:
 
     # -- one update --
 
+    def refused(self, chat, update):
+        """Whether [chat] isn't the one the bot answers. With no chat in bot.json it answers none:
+        an empty one used to mean anyone who found the bot could read, add and delete."""
+        if chat and chat == self.allowed:
+            return False
+        if not self.allowed:
+            log(f'update {update.get("update_id")} from chat {chat or "?"} ignored: no "chat" in bot.json')
+        return True
+
     def handle(self, update):
         try:
             if update.get("callback_query"):
                 cb = update["callback_query"]
                 chat = str(((cb.get("message") or {}).get("chat") or {}).get("id", ""))
-                if not chat or (self.allowed and chat != self.allowed):
+                if self.refused(chat, update):
                     return
                 # Always answer, or the tapped button keeps spinning.
                 toast = ""
@@ -456,7 +476,7 @@ class Bot:
             elif (update.get("message") or {}).get("text"):
                 msg = update["message"]
                 chat = str(msg["chat"]["id"])
-                if self.allowed and chat != self.allowed:
+                if self.refused(chat, update):
                     return
                 self.on_message(chat, msg)
         except Exception as err:  # noqa: BLE001 - as the script did: say so in the chat, keep going
@@ -466,51 +486,53 @@ class Bot:
                 chat = str(update["message"]["chat"]["id"])
             elif update.get("callback_query"):
                 chat = str(((update["callback_query"].get("message") or {}).get("chat") or {}).get("id", "")) or None
-            if chat and (not self.allowed or chat == self.allowed):
+            if chat and chat == self.allowed:
                 self.tg.call("sendMessage", {"chat_id": chat, "text": f"❌ CRASH LOG:\n{type(err).__name__}: {err}"})
 
     def on_message(self, chat, message):
         # Only the bot's name that Telegram appends to commands in groups (/search@instasong_bot).
         text = re.sub(r"^(/\w+)@\w+", r"\1", message["text"].strip(), flags=re.ASCII)
-        lower = text.lower()
+        # The command as a whole word: "/adds Em" or "/holdx" is no /add or /hold, but a mistyped
+        # command, which startswith() let through to be added or held under that name.
+        cmd = re.match(r"/(\w+)", text, flags=re.ASCII)
+        command, rest = (cmd.group(1).lower(), text[cmd.end():].strip()) if cmd else (None, "")
         user = str(message["from"]["id"])
-        state = self.store.get_state(user)
+        # Only a recent question takes typed text as its answer: days after "Artist(s)?" went
+        # unanswered, a whole new song became that old title's artist.
+        state = self.store.get_state(user, newer_than=now_ms() - WAIT_KEEP_S * 1000)
 
-        if lower.startswith("/start"):
+        if command == "start":
             self.store.clear_state(user)
             self.send(chat, "Chào bạn! 🎵\nGửi tên bài hát bất kỳ để thêm (Tên ⏎ Artist ⏎ Genre), hoặc dùng lệnh:\n\n"
                             "/add — thêm bài mới\n/hold — đưa bài vào OnHold\n/search — tìm theo tên, artist, genre hoặc \"day 26\"\n"
                             "/stats — thống kê & quản lý OnHold\n/cancel — huỷ thao tác đang dở")
             return
-        if lower.startswith("/cancel"):
+        if command == "cancel":
             self.store.clear_state(user)
             self.send(chat, "❌ Đã huỷ tác vụ.")
             return
-        if lower.startswith("/search"):
+        if command == "search":
             self.store.clear_state(user)
-            q = re.sub(r"^/search\b", "", text, flags=re.I | re.ASCII).strip()
-            if q:
-                self.search(chat, q, 0)
+            if rest:
+                self.search(chat, rest, 0)
             else:
                 self.store.set_state(user, {"step": "await_search"})
                 self.send(chat, "🔍 Nhập tên bài hát hoặc tên artist để tìm:")
             return
-        if lower.startswith("/stats"):
+        if command == "stats":
             self.store.clear_state(user)
             self.send_inline(chat, self.stats_header(), stats_menu())
             return
-        if lower.startswith("/add"):
+        if command == "add":
             self.store.clear_state(user)
-            rest = re.sub(r"^/add\b", "", text, flags=re.I | re.ASCII).strip()
             if rest:
                 self.add_input(chat, user, rest)
             else:
                 self.send(chat, "➕ Nhập thông tin bài hát.\n\nCó thể nhập 1, 2 hoặc 3 dòng:\n• Tên bài\n• Artist(s)\n• Genre\n\n"
                                 "Mẹo: gửi luôn /add kèm các dòng trên để thêm nhanh.")
             return
-        if lower.startswith("/hold"):
+        if command == "hold":
             self.store.clear_state(user)
-            rest = re.sub(r"^/hold\b", "", text, flags=re.I | re.ASCII).strip()
             if rest:
                 self.hold_input(chat, user, rest)
             else:
@@ -534,6 +556,10 @@ class Bot:
                 self.search(chat, text, 0)
                 return
             if step == "await_artist":
+                refusal = too_long(artists=text)
+                if refusal:
+                    self.send(chat, refusal)
+                    return
                 state["artists"] = text
                 state["step"] = "await_genre"
                 self.store.set_state(user, state)
@@ -551,7 +577,10 @@ class Bot:
         title = lines[0] if lines else ""
         artists = lines[1] if len(lines) > 1 else ""
         genre = parse_genre(lines[2] if len(lines) > 2 else "")
-        if title and artists and genre:
+        refusal = too_long(title=title, artists=artists)
+        if refusal:
+            self.send(chat, refusal)
+        elif title and artists and genre:
             self.try_add(chat, user, title, artists, genre)
         elif title and artists:
             self.store.set_state(user, {"step": "await_genre", "title": title, "artists": artists})
@@ -714,7 +743,12 @@ class Bot:
         if not title:
             self.send(chat, "⚠️ Lỗi. Gửi tên bài để đưa vào OnHold.")
             return
-        self.hold_song(chat, user, title, lines[1] if len(lines) > 1 else "", lines[2] if len(lines) > 2 else "")
+        artists, note = lines[1] if len(lines) > 1 else "", lines[2] if len(lines) > 2 else ""
+        refusal = too_long(title=title, artists=artists, note=note)
+        if refusal:
+            self.send(chat, refusal)
+            return
+        self.hold_song(chat, user, title, artists, note)
 
     def hold_song(self, chat, user, title, artists, note, force=False):
         conflict = None if force else find_hold_conflict(title, artists, self.store.songs(), self.store.holds())
@@ -872,6 +906,16 @@ def rows_of_three(buttons):
     return [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
 
 
+def too_long(title="", artists="", note=""):
+    """The bot's answer to a line longer than the page lets a record have, or None. Kept, it was a
+    song the page's Fix couldn't save, and the reply naming it could pass Telegram's 4,096
+    characters and be refused, so the chat heard nothing."""
+    for value, label, most in ((title, "Tên bài", MAX_TITLE), (artists, "Artist", MAX_ARTISTS), (note, "Ghi chú", MAX_NOTE)):
+        if len(value) > most:
+            return f"⚠️ {label} dài hơn {most} ký tự."
+    return None
+
+
 def stats_menu():
     return [
         [{"text": "Genre Leaderboard", "callback_data": "stats_genre"}],
@@ -999,14 +1043,23 @@ class Poller:
             return 15
         if not r.get("ok"):
             code, said = r.get("error_code"), r.get("description", "")
-            if code == 409:
+            # Telegram answers 409 both while a webhook is set and while another process polls with
+            # the same token (a copy left running under PID 1 after its supervisor died); only its
+            # description tells them apart, and webhook-off does nothing for the second.
+            if code == 409 and "webhook" in said.lower():
                 self.note("webhook", "Telegram still sends this bot's messages elsewhere (the Apps Script). "
                                      "Run `xrninsta.py webhook-off` to move them here.")
+                return 30
+            if code == 409:
+                self.note("twice", f"another copy of the bot is taking its messages; stop the old process ({said})")
                 return 30
             self.note("refused", f"{code}: {said}")
             return 300 if code in (401, 404) else 30
         self.status["lastPoll"] = now_ms()
-        self.note("ok")
+        if self.bot.allowed:
+            self.note("ok")
+        else:
+            self.note("nochat", 'no "chat" in bot.json, so it answers no one')
         for update in r.get("result") or []:
             uid = update.get("update_id")
             if isinstance(uid, int) and uid >= offset:
@@ -1125,7 +1178,9 @@ class Login:
         self.session_key = load_session_key(os.path.join(os.path.dirname(users_path), "session.key"))
         self.cache = {}
         self.fail_lock = threading.Lock()
-        self.failures = {}
+        self.fail_settled = threading.Condition(self.fail_lock)  # a login being checked has been settled
+        self.failures = {}  # address -> [(monotonic time, name tried)] of its recent wrong logins
+        self.checking = {}  # address -> how many of its logins are being checked right now
 
     def names(self):
         found = []
@@ -1145,34 +1200,84 @@ class Login:
         except OSError:
             return 0
 
+    def recent_failures(self, addr, now):
+        """This address's wrong logins within FAIL_WINDOW_S; older ones are forgotten. Under fail_lock."""
+        recent = [f for f in self.failures.get(addr, ()) if now - f[0] < FAIL_WINDOW_S]
+        if recent:
+            self.failures[addr] = recent
+        else:
+            self.failures.pop(addr, None)
+        return recent
+
     def reserve_guess(self, addr):
-        """Counts a password as wrong before it's checked, or guesses sent at once all pass while the
-        first are still in bcrypt. A right one clears the count."""
-        now = time.monotonic()
-        with self.fail_lock:
-            recent = [t for t in self.failures.get(addr, ()) if now - t < FAIL_WINDOW_S]
-            if len(recent) >= FAIL_LIMIT:
-                self.failures[addr] = recent
-                return False
-            self.failures[addr] = recent + [now]
-            return True
+        """Waits for a place to check a password from this address in; False once the address has
+        used up its wrong logins. A login being checked holds a place until settle_guess: counted only
+        afterwards, guesses sent at once all passed the check while the first were still in bcrypt.
+        It isn't a wrong login, though: one that finds no place waits for it to be settled rather than
+        being turned away, so two sign-ins at once never lock each other out."""
+        with self.fail_settled:
+            now = time.monotonic()
+            if len(self.failures) > 10000:  # a flood from many addresses: forget the stale ones
+                for a in [a for a, fs in self.failures.items() if now - fs[-1][0] >= FAIL_WINDOW_S]:
+                    del self.failures[a]
+            while True:
+                wrong = len(self.recent_failures(addr, time.monotonic()))
+                if wrong >= FAIL_LIMIT:
+                    return False
+                if wrong + self.checking.get(addr, 0) < FAIL_LIMIT:
+                    self.checking[addr] = self.checking.get(addr, 0) + 1
+                    return True
+                self.fail_settled.wait(1)
+
+    def settle_guess(self, addr, name, right):
+        """A login reserve_guess let through has been checked. A wrong one counts against the address,
+        under the name it tried. A right one clears that name's mistakes from this address, and no one
+        else's: a sign-in mustn't give a guesser behind the same address its guesses back. None, a
+        password already found right (cached_basic) or a check that broke, settles nothing."""
+        with self.fail_settled:
+            left = self.checking.get(addr, 1) - 1
+            if left > 0:
+                self.checking[addr] = left
+            else:
+                self.checking.pop(addr, None)
+            if right is False:
+                self.failures.setdefault(addr, []).append((time.monotonic(), name[:64]))
+            elif right:
+                kept = [f for f in self.failures.get(addr, ()) if f[1] != name[:64]]
+                if kept:
+                    self.failures[addr] = kept
+                else:
+                    self.failures.pop(addr, None)
+            self.fail_settled.notify_all()
 
     def locked_out(self, addr):
-        now = time.monotonic()
         with self.fail_lock:
-            return len([t for t in self.failures.get(addr, ()) if now - t < FAIL_WINDOW_S]) >= FAIL_LIMIT
+            return len(self.recent_failures(addr, time.monotonic())) >= FAIL_LIMIT
 
-    def note_success(self, addr):
-        with self.fail_lock:
-            self.failures.pop(addr, None)
-
-    def check_basic(self, header):
+    @staticmethod
+    def basic_login(header):
+        """(user, password) from `Authorization: Basic ...`, or None."""
         if not header or not header.startswith("Basic "):
             return None
         try:
             user, _, password = base64.b64decode(header[6:]).decode("utf-8").partition(":")
         except Exception:  # noqa: BLE001 - any bad header is no login
             return None
+        return user, password
+
+    def cached_basic(self, header):
+        """The user for a password already found right (the cache), else None: no check."""
+        login = self.basic_login(header)
+        if not login:
+            return None
+        hit = self.cache.get(hashlib.sha256(f"{login[0]}:{login[1]}".encode()).hexdigest())
+        return hit[0] if hit and hit[1] > time.time() and hit[2] == self.mtime() else None
+
+    def check_basic(self, header):
+        login = self.basic_login(header)
+        if not login:
+            return None
+        user, password = login
         key = hashlib.sha256(f"{user}:{password}".encode()).hexdigest()
         mtime = self.mtime()
         hit = self.cache.get(key)
@@ -1296,6 +1401,9 @@ def clean_text(doc, name, most, required):
     value = re.sub(r"\s+", " ", value).strip() if name != "note" else value.strip()
     if any(unicodedata.category(c) == "Cc" and c != "\n" for c in value):
         raise BadInput(f"{name} has control characters")
+    # JSON takes "\ud800" on its own; SQLite can't store it, and failed outside this check.
+    if any(unicodedata.category(c) == "Cs" for c in value):
+        raise BadInput(f"{name} isn't valid text")
     if required and not value:
         raise BadInput(f"{name} is needed")
     if len(value) > most:
@@ -1389,7 +1497,7 @@ class Handler(BaseHTTPRequestHandler):
         self.body_read = True
         try:
             return json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: nested deeper than the parser goes
             self.send(400, "body must be JSON")
             return None
 
@@ -1408,14 +1516,24 @@ class Handler(BaseHTTPRequestHandler):
                     time.sleep(FAIL_DELAY_S)
                 self.send(429, "too many wrong passwords; try again later", headers={"Retry-After": str(FAIL_WINDOW_S)})
                 return None
-            user = login.check_basic(header)
+            right = None
+            try:
+                # A password already found right is a session, not a login, and settles nothing: a
+                # browser or script sending it with every request cleared the count for its whole
+                # address, so a guesser behind the same one never ran out of guesses.
+                user = login.cached_basic(header)
+                if not user:
+                    user = login.check_basic(header)
+                    right = user is not None
+            finally:
+                if header:
+                    login.settle_guess(addr, (login.basic_login(header) or ("",))[0], right)
             if not user:
                 if header:
                     time.sleep(FAIL_DELAY_S)
                 challenge = {} if self.headers.get("X-Xrn-Client") else {"WWW-Authenticate": 'Basic realm="xrninsta"'}
                 self.send(401, "login required", headers=challenge)
                 return None
-            login.note_success(addr)
         if user != next(iter(login.names()), None):
             self.send(403, "these songs are the server owner's")
             return None
@@ -1601,7 +1719,7 @@ def main(argv=None):
             if not me.get("ok"):
                 raise SystemExit(f"Telegram refused the token: {me.get('description', 'no answer')}")
             url = (hook.get("url") or "").partition("?")[0]  # the rest is the script's key
-            who = chat or 'anyone (set "chat" to limit it)'
+            who = chat or 'no one (set "chat" in bot.json)'
             print(f"Bot: @{me['result'].get('username')} · answers {who}")
             if url:
                 print(f"Messages go to: {url} (the Apps Script) · {hook.get('pending_update_count', 0)} waiting")

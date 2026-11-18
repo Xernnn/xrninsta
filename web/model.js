@@ -67,3 +67,13 @@ export const DOUBLE_MS = 400;
 export function secondClick(last, key, now) {
   return Boolean(last) && last.key === key && now - last.at < DOUBLE_MS;
 }
+
+// A short label for a request that failed with HTTP [status], or with none when the server
+// couldn't be reached at all: the page shows it in place of the songs, which it can't show.
+export function failLabel(status) {
+  if (!status || status === 502 || status === 503 || status === 504) return 'Server unreachable';
+  if (status === 401) return 'Wrong name or password';
+  if (status === 403) return 'Not the owner';
+  if (status === 429) return 'Too many tries';
+  return `Error ${status}`;
+}

@@ -3,7 +3,7 @@
 // Every song here is made up; never put real ones in this repo.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { dashboard, DOUBLE_MS, holdList, secondClick, songList, TOP_ARTISTS } from '../web/model.js';
+import { dashboard, DOUBLE_MS, failLabel, holdList, secondClick, songList, TOP_ARTISTS } from '../web/model.js';
 
 const GENRES = ['VPOP', 'USUK', 'JPOP', 'MISC', 'KPOP', 'GAME', 'INST', 'VOCALOID'];
 let nextId = 1;
@@ -126,4 +126,14 @@ test('a row opens on a second click on it, not on one click', () => {
   assert.equal(secondClick({ key: 'song:1', at }, 'song:1', at + 250), true);
   assert.equal(secondClick({ key: 'song:1', at }, 'song:1', at + DOUBLE_MS + 1), false, 'too slow: two single clicks');
   assert.equal(secondClick({ key: 'song:1', at }, 'song:2', at + 100), false, 'another row');
+});
+
+test('a failed load gets a short label for what went wrong, whatever the status', () => {
+  assert.equal(failLabel(undefined), 'Server unreachable', 'fetch itself failed: offline');
+  assert.equal(failLabel(502), 'Server unreachable', 'the proxy found the service down');
+  assert.equal(failLabel(504), 'Server unreachable');
+  assert.equal(failLabel(401), 'Wrong name or password');
+  assert.equal(failLabel(403), 'Not the owner');
+  assert.equal(failLabel(429), 'Too many tries');
+  assert.equal(failLabel(500), 'Error 500');
 });

@@ -915,6 +915,47 @@ class Page(unittest.TestCase):
         self.assertEqual(self.raw("POST", "/api/holds", b"[" * 30000 + b"]" * 30000), 400)
         self.assertEqual((self.store.songs(), self.store.holds()), ([], []))
 
+    def cut_upload(self, reset):
+        """A POST whose body stops half way, then the connection closes, as the reverse proxy closes
+        it when the caller's side drops: with [reset], hard, before any answer can come back."""
+        import socket
+        import struct
+        body = json.dumps({"title": "Cut " * 500, "artists": "", "note": ""}).encode()
+        login = base64.b64encode(b"owner:pw")
+        head = (b"POST /api/holds HTTP/1.1\r\nHost: x\r\nAuthorization: Basic " + login +
+                b"\r\nContent-Type: application/json\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n")
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as log:
+            with socket.create_connection(("127.0.0.1", self.srv.server_address[1]), timeout=10) as s:
+                s.sendall(head + body[:len(body) // 2])
+                if reset:
+                    time.sleep(0.2)
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                    answer = b""
+                else:
+                    s.shutdown(socket.SHUT_WR)
+                    answer = b"".join(iter(lambda: s.recv(4096), b""))
+            for _ in range(300):  # the handler finishes on its own thread
+                if any(word in log.getvalue() for word in ("dropped", "Traceback", '" 400 ')):
+                    break
+                time.sleep(0.01)
+            time.sleep(0.1)
+        return answer, log.getvalue()
+
+    def test_an_upload_cut_short_is_answered_as_such_and_stores_nothing(self):
+        # The half that came was parsed, and the 400 said the body must be JSON.
+        answer, log = self.cut_upload(reset=False)
+        self.assertRegex(answer, rb"^HTTP/1\.[01] 400 ")
+        self.assertIn(b"the upload stopped short", answer)
+        self.assertNotIn("Traceback", log)
+        self.assertEqual(self.store.holds(), [])
+
+    def test_a_caller_that_hangs_up_is_one_line_in_the_log_not_a_traceback(self):
+        # 118 tracebacks on 15 and 16 Nov, a reset each, which xrnhub's log page counted as errors.
+        _, log = self.cut_upload(reset=True)
+        self.assertNotIn("Traceback", log)
+        self.assertIn("connection dropped: ConnectionResetError", log)
+        self.assertEqual(self.store.holds(), [])
+
     def test_a_hold_becomes_a_song_in_one_go(self):
         status, hold = self.call("POST", "/api/holds", {"title": "Later", "artists": "", "note": "line one\nline two"})
         self.assertEqual((status, hold["note"]), (201, "line one\nline two"))

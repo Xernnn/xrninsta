@@ -6,3 +6,5 @@ __pycache__/
 # Covers: real images, kept on the server, not here.
 *.zip
 *.png
+# ...but the README's screenshots, of made-up songs, are kept.
+!docs/screenshots/*.png

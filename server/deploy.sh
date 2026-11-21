@@ -77,7 +77,9 @@ exec python $HOME/xrninsta/xrninsta.py \\
   --port 5239 --data $HOME/xrninsta/data \\
   --users $HOME/.config/xrn-sync/users --config $HOME/.config/xrninsta/bot.json 2>&1
 EOS
-    cp "$S/xrnwallet-sync/log/run" "$T/log/run"
+    # Written out, not copied from another service: a fresh phone has none, and they get renamed.
+    printf "#!%s/bin/sh\nmkdir -p \"%s/var/log/sv/xrninsta\"\nexec svlogd -tt \"%s/var/log/sv/xrninsta\"\n" \
+        "$PREFIX" "$PREFIX" "$PREFIX" > "$T/log/run"
     chmod 755 "$T/run" "$T/log/run"
     chmod 700 "$T" "$T/log"
     mv "$T" "$S/xrninsta"

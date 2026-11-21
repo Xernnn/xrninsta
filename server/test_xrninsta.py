@@ -898,10 +898,6 @@ class DeployingToAPhone(DeployClone):
             os.chmod(path, 0o755)
         self.env.update(HOME=self.home, PREFIX=self.prefix)
         self.guard(0)
-        # The service it copied its log script from.
-        os.makedirs(os.path.join(self.service, "xrnwallet-sync", "log"))
-        with open(os.path.join(self.service, "xrnwallet-sync", "log", "run"), "w") as f:
-            f.write("#!/bin/sh\nexec svlogd -tt .\n")
 
     def guard(self, exits):
         """A stand-in for home-server's sv-guard on the phone, which notes it ran and exits [exits]."""
@@ -939,12 +935,23 @@ class DeployingToAPhone(DeployClone):
         self.assertEqual(self.run_script(0), (0, [f"sv-guard 5239 {program}", f"python {program}"]))
         self.assertEqual(self.run_script(1), (1, [f"sv-guard 5239 {program}"]))  # the port's taken: not started
 
+    def test_a_new_service_writes_its_own_log_script(self):
+        # It copied xrnwallet-sync's, so it failed on a phone without that service, and would
+        # once xrnwallet-sync is renamed xrnwal-sync.
+        code, said, _ = self.deploy("phone")
+        self.assertEqual(code, 0, said)
+        log_dir = f"{self.prefix}/var/log/sv/xrninsta"
+        with open(os.path.join(self.service, "xrninsta", "log", "run")) as f:
+            self.assertEqual(f.read(), f'#!{self.prefix}/bin/sh\nmkdir -p "{log_dir}"\nexec svlogd -tt "{log_dir}"\n')
+        self.assertEqual(os.stat(os.path.join(self.service, "xrninsta", "log", "run")).st_mode & 0o777, 0o755)
+        self.assertEqual(sorted(os.listdir(self.service)), ["xrninsta"])  # no half-built copy left
+
     def test_a_phone_without_sv_guard_gets_no_service(self):
         os.remove(os.path.join(self.home, ".local", "bin", "sv-guard"))
         code, said, _ = self.deploy("phone")
         self.assertEqual(code, 1, said)
         self.assertIn("phone/install-sv-guard", said)
-        self.assertEqual(os.listdir(self.service), ["xrnwallet-sync"])
+        self.assertEqual(os.listdir(self.service), [])
 
     def test_an_update_restarts_the_service_and_leaves_its_run_script_alone(self):
         self.assertEqual(self.deploy("phone")[0], 0)

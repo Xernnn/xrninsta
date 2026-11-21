@@ -3,7 +3,7 @@
 // Every song here is made up; never put real ones in this repo.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { dashboard, DOUBLE_MS, failLabel, holdList, secondClick, songList, TOP_ARTISTS } from '../web/model.js';
+import { botLabel, dashboard, DOUBLE_MS, failLabel, holdList, secondClick, songList, TOP_ARTISTS } from '../web/model.js';
 
 const GENRES = ['VPOP', 'USUK', 'JPOP', 'MISC', 'KPOP', 'GAME', 'INST', 'VOCALOID'];
 let nextId = 1;
@@ -136,4 +136,18 @@ test('a failed load gets a short label for what went wrong, whatever the status'
   assert.equal(failLabel(403), 'Not the owner');
   assert.equal(failLabel(429), 'Too many tries');
   assert.equal(failLabel(500), 'Error 500');
+});
+
+test("the bot's banner says what's wrong, and a chat that isn't a chat id is one of those", () => {
+  assert.equal(botLabel({ state: 'ok', error: '' }), null, 'running: no banner');
+  assert.equal(botLabel({ state: 'starting', error: '' }), null);
+  assert.equal(botLabel({ state: 'nochat', error: 'no "chat" in bot.json, so it answers no one' }), 'Bot off: no chat in bot.json');
+  assert.equal(botLabel({ state: 'badchat', error: 'the "chat" in bot.json is "<your chat id>", which isn\'t a chat id' }),
+    'Bot off: the chat in bot.json isn\'t a chat id');
+  assert.equal(botLabel({ state: 'refused', error: '401: Unauthorized' }), 'Bot: Telegram refused it: 401: Unauthorized');
+});
+
+test('a message from another chat is in the banner, with the chat it came from', () => {
+  const error = 'a message came from chat 4242, but the "chat" in bot.json is 100';
+  assert.equal(botLabel({ state: 'otherchat', error }), `Bot: ignored another chat: ${error}`);
 });

@@ -26,6 +26,7 @@ also write to and refuse.
 
     python3 xrninsta.py --data ~/xrninsta/data --users ~/.config/xrn-sync/users \\
         --config ~/.config/xrninsta/bot.json [--port 5239]
+    python3 xrninsta.py song-bot --config ~/.config/xrninsta/bot.json
     python3 xrninsta.py import <export.xlsx> --data ~/xrninsta/data [--replace]
     python3 xrninsta.py check --config ~/.config/xrninsta/bot.json
     python3 xrninsta.py webhook-off --config ~/.config/xrninsta/bot.json
@@ -34,9 +35,11 @@ also write to and refuse.
     python3 xrninsta.py check|webhook-off --covers --config ~/.config/xrninsta/bot.json [--data ...]
 
 bot.json is {"token": "<from BotFather>", "chat": "<the one chat it answers>"}, readable only by
-you; with no chat the bot answers none, and logs each update it ignores. `check` says which bot the
-token is and where Telegram sends its messages now. `webhook-off` is the switch from Apps Script: it
-stops Telegram posting to the script, so the messages come here.
+you, which `song-bot` writes. The chat is the number Telegram gives it; with none, or one that isn't
+a number, the bot answers no one, says so in its status, and logs each update it ignores. `check`
+says which bot the token is, the chat it answers and where Telegram sends its messages now.
+`webhook-off` is the switch from Apps Script: it stops Telegram posting to the script, so the
+messages come here.
 
 The daily cover (apps-script/coverbot.gs) is a second bot, the Daily Story Bot, with its own token
 under "covers" in bot.json ({"covers": {"token": ..., "chat": ...}}, which `covers-bot` writes). At
@@ -102,6 +105,8 @@ COVER_COMMANDS = [
     {"command": "sendnow", "description": "Gửi ảnh của hôm nay ngay"},
     {"command": "start", "description": "Hướng dẫn sử dụng"},
 ]
+# A chat as Telegram numbers it: a person's id, or a group's (negative). Both bots answer one each.
+CHAT_ID = re.compile(r"-?[0-9]{1,20}")
 
 # ---- the server ---------------------------------------------------------------------------------
 
@@ -465,13 +470,68 @@ def log(text):
 
 # ---- the bot ---------------------------------------------------------------------------------------
 
+class Chat:
+    """The one chat a bot answers, as bot.json names it ([where] in bot.json, for [name] in the log).
+    Only a chat id counts: from 18 to 21 Nov 2026 the song bot's "chat" was a pasted
+    "<your chat id>", which counted as set because it wasn't empty, so the bot ignored every
+    message while its log said ok. Now that answers no one and says why, at start and after. A
+    chat id that is another chat's was as quiet: now each message from another chat is logged, and
+    the status isn't ok until the bot's own chat is heard from again."""
+
+    def __init__(self, chat, where, name):
+        self.id = str("" if chat is None else chat).strip()
+        self.where = where
+        self.name = name
+        self.usable = bool(CHAT_ID.fullmatch(self.id))
+        self.stranger = None  # the last other chat a message came from, since this one's last
+
+    def fault(self):
+        """What's wrong with the chat bot.json names, or "" if nothing is."""
+        if not self.id:
+            return f'no "chat" {self.where}'
+        if not self.usable:
+            shown = json.dumps(truncate(self.id, 40), ensure_ascii=False)
+            return f'the "chat" {self.where} is {shown}, which isn\'t a chat id (a number such as 123456789)'
+        return ""
+
+    def problem(self, does="answers no one"):
+        """(state, why) for a status when the bot can't answer its chat, or None when it can."""
+        fault = self.fault()
+        return (("nochat" if not self.id else "badchat"), f"{fault}, so it {does}") if fault else None
+
+    def state(self):
+        """(state, why) for the poller's status after a poll that worked: a fault in bot.json, or
+        another chat heard from last, or ok."""
+        if self.problem():
+            return self.problem()
+        if self.stranger:
+            return "otherchat", f'a message came from chat {self.stranger}, but the "chat" {self.where} is {self.id}'
+        return ("ok",)
+
+    def is_ours(self, chat):
+        return self.usable and chat == self.id
+
+    def lets_in(self, chat, update):
+        """Whether an update from [chat] is the bot's to answer."""
+        if self.is_ours(chat):
+            self.stranger = None
+            return True
+        if not self.usable:
+            log(f'{self.name}: update {update.get("update_id")} from chat {chat or "?"} ignored: {self.fault()}')
+        else:
+            log(f'{self.name}: update {update.get("update_id")} from chat {chat or "?"} ignored: '
+                f'the "chat" {self.where} is {self.id}')
+            self.stranger = chat or "?"
+        return False
+
+
 class Bot:
     """code.gs's doPost and everything it calls, with the sheet swapped for the store."""
 
     def __init__(self, store, tg, allowed_chat=""):
         self.store = store
         self.tg = tg
-        self.allowed = str(allowed_chat or "").strip()
+        self.chat = Chat(allowed_chat, "in bot.json", "bot")
 
     # -- sending, as the script's helpers did --
 
@@ -500,11 +560,7 @@ class Bot:
     def refused(self, chat, update):
         """Whether [chat] isn't the one the bot answers. With no chat in bot.json it answers none:
         an empty one used to mean anyone who found the bot could read, add and delete."""
-        if chat and chat == self.allowed:
-            return False
-        if not self.allowed:
-            log(f'update {update.get("update_id")} from chat {chat or "?"} ignored: no "chat" in bot.json')
-        return True
+        return not self.chat.lets_in(chat, update)
 
     def handle(self, update):
         try:
@@ -532,11 +588,11 @@ class Bot:
                 chat = str(update["message"]["chat"]["id"])
             elif update.get("callback_query"):
                 chat = str(((update["callback_query"].get("message") or {}).get("chat") or {}).get("id", "")) or None
-            if chat and chat == self.allowed:
+            if chat and self.chat.is_ours(chat):
                 self.tg.call("sendMessage", {"chat_id": chat, "text": f"❌ CRASH LOG:\n{type(err).__name__}: {err}"})
 
     def on_message(self, chat, message):
-        # Only the bot's name that Telegram appends to commands in groups (/search@instasong_bot).
+        # Only the bot's name that Telegram appends to commands in groups (/search@example_song_bot).
         text = re.sub(r"^(/\w+)@\w+", r"\1", message["text"].strip(), flags=re.ASCII)
         # The command as a whole word: "/adds Em" or "/holdx" is no /add or /hold, but a mistyped
         # command, which startswith() let through to be added or held under that name.
@@ -1069,14 +1125,17 @@ class Poller:
     saved before an update is handled: one that crashes the bot is skipped next time rather than
     added twice, as the script's webhook, which always answered OK, also did."""
 
-    def __init__(self, store, bot, name="bot", offset_key="offset", switch="webhook-off", chat_at="in bot.json"):
+    def __init__(self, store, bot, name="bot", offset_key="offset", switch="webhook-off"):
         self.store = store
         self.bot = bot
         self.name = name  # in the log
         self.offset_key = offset_key  # each bot keeps its own place in its own updates
         self.switch = switch  # the xrninsta.py command that moves its messages here
-        self.chat_at = chat_at  # where bot.json names its chat
         self.status = {"state": "starting", "since": now_ms(), "lastPoll": None, "error": ""}
+        # A chat it can't answer is said once it starts, not first after a poll that worked.
+        problem = bot.chat.problem()
+        if problem:
+            self.note(*problem)
 
     def note(self, state, error=""):
         if self.status["state"] != state or self.status["error"] != error:
@@ -1106,15 +1165,13 @@ class Poller:
             self.note("refused", f"{code}: {said}")
             return 300 if code in (401, 404) else 30
         self.status["lastPoll"] = now_ms()
-        if self.bot.allowed:
-            self.note("ok")
-        else:
-            self.note("nochat", f'no "chat" {self.chat_at}, so it answers no one')
         for update in r.get("result") or []:
             uid = update.get("update_id")
             if isinstance(uid, int) and uid >= offset:
                 self.store.set_meta(self.offset_key, uid + 1)
                 self.bot.handle(update)
+        # After the updates, which may have come from another chat.
+        self.note(*self.bot.chat.state())
         return 0
 
     def run(self):
@@ -1160,7 +1217,7 @@ class Covers:
     def __init__(self, store, tg, allowed_chat, folder, zone=None):
         self.store = store
         self.tg = tg
-        self.allowed = str(allowed_chat or "").strip()
+        self.chat = Chat(allowed_chat, 'under "covers" in bot.json', "covers bot")
         self.folder = folder
         self.zone = zone or load_zone(COVER_ZONE)
         self.lock = threading.Lock()  # the 2am send and /sendnow, never both at once
@@ -1175,7 +1232,7 @@ class Covers:
         return datetime.datetime.now(self.zone)
 
     def send(self, text):
-        self.tg.call("sendMessage", {"chat_id": self.allowed, "text": text, "parse_mode": "HTML"})
+        self.tg.call("sendMessage", {"chat_id": self.chat.id, "text": text, "parse_mode": "HTML"})
 
     def send_cover(self, day):
         """Day <day>'s cover to the chat. True once it's settled: sent, or no such cover or a
@@ -1190,7 +1247,7 @@ class Covers:
             self.send(f"⚠️ Không tìm thấy ảnh cho hôm nay: <b>{name}</b>\nBạn hãy chép thêm ảnh lên server nhé.")
             self.note("missing", f"no {name} in {self.folder}")
             return True
-        r = self.tg.upload("sendPhoto", {"chat_id": self.allowed, "caption": f"Day {day}'s cover"},
+        r = self.tg.upload("sendPhoto", {"chat_id": self.chat.id, "caption": f"Day {day}'s cover"},
                            "photo", name, content)
         if r is None:
             self.note("unreachable", "Telegram didn't answer")
@@ -1230,8 +1287,10 @@ class Covers:
         if self.zone is None:
             self.note("nozone", f"Python has no time zone data for {COVER_ZONE}; pip install tzdata")
             return 3600
-        if not self.allowed:
-            self.note("nochat", 'no "chat" under "covers" in bot.json, so it sends no one a cover')
+        # Sent to a chat that isn't one, Telegram's refusal settled the day and the cover never went.
+        problem = self.chat.problem("sends no one a cover")
+        if problem:
+            self.note(*problem)
             return 3600
         now = now or self.now()
         day = cover_day(now.date())
@@ -1253,9 +1312,7 @@ class Covers:
         if not msg.get("text"):
             return
         chat = str((msg.get("chat") or {}).get("id", ""))
-        if not chat or chat != self.allowed:
-            if not self.allowed:
-                log(f'covers: update {update.get("update_id")} from chat {chat or "?"} ignored: no "chat" under "covers" in bot.json')
+        if not self.chat.lets_in(chat, update):
             return
         text = re.sub(r"^(/\w+)@\w+", r"\1", msg["text"].strip(), flags=re.ASCII)
         cmd = re.match(r"/(\w+)\b", text, flags=re.ASCII)
@@ -1276,8 +1333,7 @@ class Covers:
 
 def covers_poller(store, covers):
     """The Daily Story Bot's own poller: its place in its own updates, and its own switch."""
-    return Poller(store, covers, name="covers bot", offset_key="covers_offset", switch="webhook-off --covers",
-                  chat_at='under "covers" in bot.json')
+    return Poller(store, covers, name="covers bot", offset_key="covers_offset", switch="webhook-off --covers")
 
 
 def cover_days(folder):
@@ -2084,18 +2140,43 @@ def need_token(config_path, covers=False):
     return token, str(conf.get("chat") or "").strip()
 
 
-def set_covers_bot(config_path, token, chat):
-    """Puts the Daily Story Bot's token and chat under "covers" in bot.json, keeping the rest."""
+def checked_bot(token, chat):
+    """The token and chat a setup command was given, stripped, or SystemExit saying what's wrong
+    with them. The chat is the number Telegram gives it: a "<your chat id>" pasted where it goes
+    made the song bot ignore every message for three days."""
     token, chat = token.strip(), chat.strip()
     if not token:
         raise SystemExit("No token; nothing was written.")
-    if not re.fullmatch(r"-?[0-9]{1,20}", chat):
-        raise SystemExit("The chat id is a number; nothing was written.")
+    if not CHAT_ID.fullmatch(chat):
+        raise SystemExit("The chat id is a number, such as 123456789 (a group's starts with -); nothing was written.")
+    return token, chat
+
+
+def set_song_bot(config_path, token, chat):
+    """Puts the song bot's token and chat in bot.json, keeping the Daily Story Bot's."""
+    token, chat = checked_bot(token, chat)
+    path = os.path.expanduser(config_path)
+    conf = read_config(path)
+    covers = conf.get("covers") if isinstance(conf.get("covers"), dict) else {}
+    if token == str(covers.get("token") or "").strip():
+        raise SystemExit("That's the Daily Story Bot's token; the song bot has one of its own. Nothing was written.")
+    conf["token"], conf["chat"] = token, chat
+    write_config(path, conf)
+
+
+def set_covers_bot(config_path, token, chat):
+    """Puts the Daily Story Bot's token and chat under "covers" in bot.json, keeping the rest."""
+    token, chat = checked_bot(token, chat)
     path = os.path.expanduser(config_path)
     conf = read_config(path)
     if token == str(conf.get("token") or "").strip():
         raise SystemExit("That's the song bot's token; the Daily Story Bot has one of its own. Nothing was written.")
     conf["covers"] = {"token": token, "chat": chat}
+    write_config(path, conf)
+
+
+def write_config(path, conf):
+    """bot.json, whole, readable only by its owner: written beside it and moved in place."""
     tmp = f"{path}.{os.getpid()}.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -2173,7 +2254,8 @@ def main(argv=None):
             if not me.get("ok"):
                 raise SystemExit(f"Telegram refused the token: {me.get('description', 'no answer')}")
             url = (hook.get("url") or "").partition("?")[0]  # the rest is the script's key
-            who = chat or ('no one (set "chat" under "covers" in bot.json)' if a.covers else 'no one (set "chat" in bot.json)')
+            fault = Chat(chat, 'under "covers" in bot.json' if a.covers else "in bot.json", "").fault()
+            who = f"no one: {fault}; `xrninsta.py {'covers-bot' if a.covers else 'song-bot'}` sets it" if fault else chat
             print(f"Bot: @{me['result'].get('username')} · answers {who}")
             if url:
                 print(f"Messages go to: {url} (the Apps Script) · {hook.get('pending_update_count', 0)} waiting")
@@ -2192,6 +2274,15 @@ def main(argv=None):
             raise SystemExit(f"Telegram didn't take it: {r.get('description', 'no answer')}")
         tg.call("setMyCommands", {"commands": COVER_COMMANDS if a.covers else COMMANDS})
         print("Done: Telegram stops posting to the Apps Script, and the bot here picks messages up within a minute.")
+        return
+    if argv[:1] == ["song-bot"]:
+        p = argparse.ArgumentParser(prog="xrninsta.py song-bot",
+                                    description="asks for the song bot's token and chat, and puts them in bot.json")
+        p.add_argument("--config", required=True)
+        a = p.parse_args(argv[1:])
+        os.makedirs(os.path.dirname(os.path.abspath(os.path.expanduser(a.config))), mode=0o700, exist_ok=True)
+        set_song_bot(a.config, getpass.getpass("Song bot token: "), input("Chat id: "))
+        print(f"Written in {a.config}. Restart xrninsta to start the bot.")
         return
     if argv[:1] == ["covers-bot"]:
         p = argparse.ArgumentParser(prog="xrninsta.py covers-bot",

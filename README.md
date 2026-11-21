@@ -52,6 +52,12 @@ the script's were.
   answered as such rather than added as a song called "/serch". An error in the bot is sent to the
   chat as a crash line and the bot carries on.
 
+<img src="docs/screenshots/bot-songs.png" width="440" alt="A transcript of the song bot: /add with a new song and its reply with an Undo button; a song already in the list and the bot's warning with Add anyway and Cancel; /search paper with two results; /stats with its menu, then the Genre Leaderboard it turns into; /hold and its reply">
+
+*The song bot's real replies: `server/xrninsta.py`, unchanged, run on the laptop against a
+stand-in for Telegram's Bot API, and sent made-up messages. Shown as a plain transcript, not as
+Telegram draws it.*
+
 ## The page
 
 ![The Songs tab with one row open to be fixed: title, artists, day and genre fields, Save, Cancel and Delete](docs/screenshots/songs.png)
@@ -83,9 +89,11 @@ Escape puts a row being fixed back as it was.
 
 A change made on the page while the bot changed the same song (or another tab did) isn't lost: the
 save is refused with the song as it is now, and the form keeps what was typed. A banner under the
-title bar says when the bot isn't running or can't reach Telegram ("Bot off: no token in bot.json",
-"Bot: can't reach Telegram", "Bot: two copies running" and so on); with the bot running there is
-none. The page follows the device's light or dark setting.
+title bar says when the bot isn't running, can't reach Telegram or isn't hearing its chat ("Bot
+off: no token in bot.json", "Bot off: the chat in bot.json isn't a chat id", "Bot: can't reach
+Telegram", "Bot: ignored another chat: a message came from chat 4242, but the "chat" in bot.json
+is 100", "Bot: two copies running" and so on); with the bot running there is none. The page
+follows the device's light or dark setting.
 
 <table>
   <tr>
@@ -121,6 +129,11 @@ they're made elsewhere and copied up.
   for 60 days. Keep the zip they came from.
 - It needs time zone data, which Termux's Python lacks; `deploy.sh` installs `tzdata`. Without it
   no cover goes out, and the log and `check --covers` say why.
+
+<img src="docs/screenshots/bot-cover.png" width="440" alt="A transcript of the Daily Story Bot: /start and its greeting, then /sendnow, its please-wait line, and the day's cover with the caption Day 297's cover">
+
+*The Daily Story Bot's real replies to `/start` and `/sendnow`, recorded the same way, with a
+made-up cover.*
 
 ## How it differs from the scripts
 
@@ -174,19 +187,27 @@ It runs on the home server as the runit service `xrninsta`, on port 5239, publis
   `{"token": ..., "chat": ..., "covers": {"token": ..., "chat": ...}}`. Never in this repo.
 - The log: `$PREFIX/var/log/sv/xrninsta/current`. A bot says each change of state once:
   `bot: ok`, `covers bot: ok`, `covers: ok`, or `webhook` (Telegram still sends to the Apps
-  Script), `twice` (another copy is polling with the same token), `nochat`, `unreachable`,
-  `refused`. With no chat set, each update a bot ignores is logged with the chat it came from.
+  Script), `twice` (another copy is polling with the same token), `nochat`, `badchat` (the chat
+  in bot.json isn't a chat id, the number Telegram gives a chat, so it answers no one; said as soon
+  as it starts), `otherchat` (a message came from a chat other than bot.json's, until bot.json's
+  own chat is heard from again), `unreachable`, `refused`. Every update a bot ignores is logged
+  with the chat it came from (`bot: update 812 from chat 4242 ignored: ...`), never with what it
+  said, so a wrong chat id in bot.json shows the right one in the log.
 
 `server/deploy.sh [--force] [ssh-host]` (default `homeserver`) installs or updates it. It runs the
 tests first, refuses uncommitted changes to `server/xrninsta.py` or `web/` (`--force` sends them
 anyway), says which branch and commit it sends, copies the program and its page together, installs
 `tzdata`, makes the service the first time and restarts it after, waits for `/health`, publishes
 `/xrninsta`, and ends with `check` for each bot. It leaves the songs, the covers and `bot.json`
-alone.
+alone. The service's run script calls `~/.local/bin/sv-guard 5239 ~/xrninsta/xrninsta.py` just
+before it starts the program, as every other service's does, so a copy left running by a dead
+supervisor is stopped instead of holding the port. The guard comes from the home-server repo
+(`phone/install-sv-guard`); without it on the phone, `deploy.sh` makes no service and says so.
 
 The commands, all on the server:
 
 ```sh
+python ~/xrninsta/xrninsta.py song-bot --config ~/.config/xrninsta/bot.json        # asks for the song bot's token and chat
 python ~/xrninsta/xrninsta.py check --config ~/.config/xrninsta/bot.json          # which bot, which chat, where its messages go
 python ~/xrninsta/xrninsta.py check --covers --config ~/.config/xrninsta/bot.json --data ~/xrninsta/data   # and how far the covers go
 python ~/xrninsta/xrninsta.py webhook-off [--covers] --config ~/.config/xrninsta/bot.json   # take a bot's messages from the Apps Script
@@ -201,21 +222,20 @@ Both bots have moved (November 2026). The steps are kept here for setting it up 
 
 ### The song bot
 
-1. Put the bot's token and chat id on the server. They're in the Apps Script project's settings,
-   under Script properties (`BOT_TOKEN`, `ALLOWED_CHAT_ID`):
+1. Install it: `server/deploy.sh`. The page runs, and the bot waits for its token.
+2. Give it the bot. The token and chat id are in the Apps Script project's settings, under Script
+   properties (`BOT_TOKEN`, `ALLOWED_CHAT_ID`). `song-bot` asks for both, so the token never goes
+   on a command line, refuses a chat id that isn't a number, and keeps the cover bot's part of
+   bot.json:
 
    ```sh
-   ssh -t homeserver 'mkdir -p ~/.config/xrninsta && umask 077 &&
-     read -rsp "Bot token: " t && echo && read -rp "Chat id: " c &&
-     case $c in ""|*[!0-9-]*) echo "The chat id is a number; nothing was written." >&2; exit 1;; esac &&
-     printf "{\"token\": \"%s\", \"chat\": \"%s\"}\n" "$t" "$c" > ~/.config/xrninsta/bot.json'
+   ssh -t homeserver 'python ~/xrninsta/xrninsta.py song-bot --config ~/.config/xrninsta/bot.json'
+   ssh homeserver 'SVDIR=$PREFIX/var/service sv restart xrninsta'
+   ssh homeserver 'python ~/xrninsta/xrninsta.py check --config ~/.config/xrninsta/bot.json'
    ```
 
-   The bot answers only that chat. Without one it answers no one, and its log names each chat it
-   ignored. This writes a new bot.json, so run it before `covers-bot`, or the cover bot's part goes.
-
-2. Install it: `server/deploy.sh`. It ends with `check`, which names the bot and says Telegram
-   still sends its messages to the Apps Script. Nothing has moved yet.
+   The bot answers only that chat. `check` names the bot and its chat, and says Telegram still
+   sends its messages to the Apps Script. Nothing has moved yet.
 3. Download the sheet as .xlsx (File, Download, Microsoft Excel) and import it:
 
    ```sh
@@ -230,6 +250,8 @@ Both bots have moved (November 2026). The steps are kept here for setting it up 
    included, within a minute. It also sets the bot's command list.
 5. In the Apps Script editor, delete the trigger that refreshes the Dashboard every 10 minutes, and
    don't run `setupBot` or `forceSetWebhook` again: either would point Telegram back at the script.
+6. Retire the script's web app: in the editor, Deploy, Manage deployments, pick each active
+   deployment, Archive. Its address then answers nothing, so the URL in `code.gs` is dead.
 
 Add songs only through the bot between steps 3 and 4 if you're willing to import again; the import
 won't run over songs that are already there without `--replace`.
@@ -261,6 +283,8 @@ won't run over songs that are already there without `--replace`.
    `check --covers` (add `--data ~/xrninsta/data` for the covers) shows where its messages go.
 5. In the cover script's Triggers, delete the daily trigger for `sendDailyStory` before the next
    2am, or both send that night's cover. Don't run `forceSetWebhook` again.
+6. Archive its web app the same way (Deploy, Manage deployments, Archive), so the URL in
+   `coverbot.gs` is dead too.
 
 ## Running it on the laptop
 
@@ -275,8 +299,7 @@ in bot.json the page runs and the bot doesn't, and the page says "Bot off". Don'
 copy a real bot's token while the server's copy runs: Telegram hands each update to one poller,
 and both log `twice`.
 
-The page uses [MiSans](https://hyperos.mi.com/font) by Xiaomi, the font of every xrn app, free for
-commercial use and served with the page (`web/MiSansLatinVF.woff2`) under its terms.
+The page is set in MiSans, the font of every xrn app, served with it (`web/MiSansLatinVF.woff2`).
 
 ## Tests
 
@@ -285,15 +308,18 @@ cd server && python3 -m unittest test_xrninsta
 node --test test
 ```
 
-The first (84 tests) drive both bots against a fake Telegram, import a made-up sheet, add made-up
-covers, and use the page's API over HTTP; the second (11) check the page's own arithmetic
-(`web/model.js`: the Dashboard's groups and counts, the Songs tab's find and order, the double
-click, the error labels). Every song in them is made up; never add real ones, an export of the
+The first (98 tests) drive both bots against a fake Telegram, import a made-up sheet, add made-up
+covers, use the page's API over HTTP, and run `deploy.sh` against a made-up phone; the second (13)
+check the page's own arithmetic (`web/model.js`: the Dashboard's groups and counts, the Songs tab's
+find and order, the double click, the error labels and the bot's banner). Every song in them is made up; never add real ones, an export of the
 sheet, or a real cover, to this repo. `.gitignore` keeps out `*.xlsx`, `*.csv`, `*.zip` and every
 PNG but the screenshots.
 
-The screenshots come from a copy of the server run on the laptop with made-up songs and no bot
-token, in headless Chromium.
+The page's screenshots come from a copy of the server run on the laptop with made-up songs and no
+bot token, in headless Chromium. The bots' come from their real code, run on the laptop with its
+Telegram address pointed at a stand-in on 127.0.0.1 that answers `getUpdates`, `sendMessage`,
+`sendPhoto` and the rest; made-up messages went in, and the replies that came out were laid out as
+a plain transcript and screenshotted in headless Chromium. Nothing reached Telegram.
 
 ## Files
 
@@ -302,7 +328,17 @@ token, in headless Chromium.
 | `server/xrninsta.py` | the bots, the store, the importer and the page's server, in one file |
 | `server/test_xrninsta.py` | its tests |
 | `server/deploy.sh` | installs or updates it on the home server |
-| `web/` | the page: `index.html`, `app.js` (the DOM), `model.js` (the arithmetic), `style.css`, the icon and the font |
+| `web/` | the page: `index.html`, `app.js` (the DOM), `model.js` (the arithmetic), `style.css`, the icon, and the font with its note (`web/README.md`) |
 | `test/page.test.mjs` | the page's tests |
 | `apps-script/code.gs`, `apps-script/coverbot.gs` | the Apps Scripts it replaced |
 | `docs/screenshots/` | the pictures above |
+
+## Licence
+
+MIT, in [LICENSE](LICENSE), except the font.
+
+## Credits
+
+MiSans by Xiaomi, used under the MiSans font licence (free for commercial use when the software
+notes that it uses MiSans). The font files are not covered by this repository's licence.
+https://hyperos.mi.com/font/en/

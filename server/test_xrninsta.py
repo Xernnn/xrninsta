@@ -296,7 +296,7 @@ class Searching(Base):
         self.assertIn("Blue Hour", self.tg.last_text())
 
     def test_the_bots_name_after_a_command_is_ignored(self):
-        self.say("/search@instasong_bot remember")
+        self.say("/search@example_song_bot remember")
         self.assertIn("Remember Me", self.tg.last_text())
 
     def test_pages_turn_while_the_search_is_kept(self):
@@ -355,6 +355,76 @@ class Guarding(Base):
         poller = x.Poller(self.store, x.Bot(self.store, self.tg, " "))
         poller.once()
         self.assertEqual(poller.status["state"], "nochat")
+
+    def test_messages_from_another_chat_are_logged_and_the_status_isnt_ok_till_its_own_chat_speaks(self):
+        # A chat id that is a number, but another chat's, dropped every message as quietly as
+        # "<your chat id>" did: nothing in the log, and the status said ok.
+        poller = x.Poller(self.store, self.bot)
+        message = lambda uid, chat, text: {"update_id": uid, "message": {  # noqa: E731
+            "message_id": uid, "chat": {"id": chat}, "from": {"id": USER}, "text": text}}
+        self.tg.updates = [{"ok": True, "result": [message(5, 4242, "Song\nSomeone\nvpop")]},
+                           {"ok": True, "result": []}]
+        with mock.patch.object(x, "log") as logged:
+            poller.once()
+            poller.once()  # an empty poll since doesn't make it ok again
+        self.assertEqual(self.titles(), [])
+        self.assertEqual(poller.status["state"], "otherchat")
+        self.assertIn("chat 4242", poller.status["error"])
+        self.assertIn(f"in bot.json is {CHAT}", poller.status["error"])
+        lines = [c.args[0] for c in logged.call_args_list]
+        self.assertIn(f'bot: update 5 from chat 4242 ignored: the "chat" in bot.json is {CHAT}', lines)
+        self.assertTrue(any(line.startswith("bot: otherchat: ") for line in lines), lines)
+        self.assertNotIn("Song", " ".join(lines))  # what was sent stays out of the log
+        self.tg.updates = [{"ok": True, "result": [message(6, int(CHAT), "/start")]}]
+        with mock.patch.object(x, "log"):
+            poller.once()
+        self.assertEqual(poller.status["state"], "ok")
+
+    def test_the_cover_bot_says_so_too(self):
+        covers = x.Covers(self.store, self.tg, CHAT, os.path.join(self.folder, "covers"), x.load_zone(x.COVER_ZONE))
+        poller = x.covers_poller(self.store, covers)
+        self.tg.updates = [{"ok": True, "result": [{"update_id": 3, "message": {
+            "message_id": 3, "chat": {"id": 4242}, "from": {"id": USER}, "text": "/sendnow"}}]}]
+        with mock.patch.object(x, "log") as logged:
+            poller.once()
+        self.assertEqual(poller.status["state"], "otherchat")
+        self.assertIn('under "covers" in bot.json', poller.status["error"])
+        self.assertIn("covers bot: update 3 from chat 4242 ignored", "\n".join(c.args[0] for c in logged.call_args_list))
+        self.assertEqual(self.tg.sent("sendPhoto"), [])
+
+    def test_a_chat_that_isnt_a_chat_id_is_said_at_start_and_stays_in_the_status(self):
+        # 18-21 Nov 2026: bot.json's "chat" held a pasted "<your chat id>". Any chat that wasn't empty
+        # counted as set, so the bot ignored every message while its log and its status said ok.
+        with mock.patch.object(x, "log") as logged:
+            poller = x.Poller(self.store, x.Bot(self.store, self.tg, "<your chat id>"))
+            started = poller.status["state"]
+            self.tg.updates = [{"ok": True, "result": [{"update_id": 9, "message": {
+                "message_id": 1, "chat": {"id": int(CHAT)}, "from": {"id": USER}, "text": "Song\nSomeone\nvpop"}}]}]
+            poller.once()
+        self.assertEqual((started, poller.status["state"]), ("badchat", "badchat"))
+        self.assertIn('"<your chat id>"', poller.status["error"])
+        self.assertEqual(self.titles(), [])
+        lines = [c.args[0] for c in logged.call_args_list]
+        self.assertTrue(lines[0].startswith("bot: badchat: "), lines)  # said once it starts, before any poll
+        self.assertIn(f"bot: update 9 from chat {CHAT} ignored", "\n".join(lines))
+
+    def test_a_chat_id_is_a_number_or_nothing(self):
+        for chat in (CHAT, "-1001234567890", " 100 ", 100, -42):
+            self.assertIsNone(x.Chat(chat, "in bot.json", "bot").problem(), chat)
+        self.assertEqual(x.Chat("", "in bot.json", "bot").problem()[0], "nochat")
+        for chat in ("<your chat id>", "12 34", "-", "1-2", "@a_channel", "100.0", "+100", "1" * 21):
+            self.assertEqual(x.Chat(chat, "in bot.json", "bot").problem()[0], "badchat", chat)
+
+    def test_check_says_when_the_chat_isnt_a_chat_id(self):
+        path = os.path.join(self.folder, "bot.json")
+        with open(path, "w") as f:
+            json.dump({"token": "song:token", "chat": "<your chat id>"}, f)
+        self.tg.answers = {"getMe": {"ok": True, "result": {"username": "example_song_bot"}},
+                           "getWebhookInfo": {"ok": True, "result": {"url": ""}}}
+        out = io.StringIO()
+        with mock.patch.object(x, "Telegram", return_value=self.tg), mock.patch("sys.stdout", out):
+            x.main(["check", "--config", path])
+        self.assertIn('answers no one: the "chat" in bot.json is "<your chat id>", which isn\'t a chat id', out.getvalue())
 
     def test_a_crash_is_reported_in_the_chat(self):
         with mock.patch.object(self.bot, "try_add", side_effect=RuntimeError("boom")):
@@ -523,7 +593,7 @@ class Covering(unittest.TestCase):
         self.assertEqual(self.photos(), ["Day 295's cover"])
         self.covers.tick(at("2026-11-18 15:00"))
         self.assertEqual(self.photos(), ["Day 295's cover"])
-        self.say("/sendnow@daily_story_bot")  # asked again, it goes again
+        self.say("/sendnow@example_story_bot")  # asked again, it goes again
         self.assertEqual(self.photos(), ["Day 295's cover"] * 2)
 
     def test_it_answers_only_its_chat_and_its_own_commands(self):
@@ -541,6 +611,16 @@ class Covering(unittest.TestCase):
         covers.tick(at("2026-11-18 15:00"))
         self.assertEqual(self.tg.calls, [])
         self.assertEqual(covers.status["state"], "nochat")
+
+    def test_a_chat_that_isnt_a_chat_id_gets_no_cover_and_the_day_stays_unsent(self):
+        # Sent to "<your chat id>", Telegram's refusal settled the day: the cover was never sent.
+        covers = x.Covers(self.store, self.tg, "<your chat id>", self.dir, SYDNEY)
+        self.cover(295)
+        with mock.patch.object(x, "log"):
+            covers.tick(at("2026-11-18 15:00"))
+        self.assertEqual(self.tg.calls, [])
+        self.assertEqual(covers.status["state"], "badchat")
+        self.assertIsNone(self.store.meta("cover_day"))
 
     def test_without_time_zone_data_it_sends_nothing_and_says_why(self):
         self.cover(295)
@@ -609,6 +689,47 @@ class CoverBotSetting(unittest.TestCase):
                 x.set_covers_bot(self.path, token, chat)
         with open(self.path) as f:
             self.assertNotIn("covers", json.load(f))
+
+
+class SongBotSetting(unittest.TestCase):
+    """`song-bot`, the song bot's setup: it asks for the token and the chat, as covers-bot does."""
+
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="xrninsta-songbot-")
+        self.addCleanup(shutil.rmtree, self.folder)
+        self.path = os.path.join(self.folder, "bot.json")
+
+    def test_it_writes_the_song_bot_and_keeps_the_cover_bot(self):
+        with open(self.path, "w") as f:
+            json.dump({"token": "old:token", "chat": "1", "covers": {"token": "story:token", "chat": CHAT}}, f)
+        x.set_song_bot(self.path, " song:token ", f" {CHAT}\n")
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), {"token": "song:token", "chat": CHAT,
+                                            "covers": {"token": "story:token", "chat": CHAT}})
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+    def test_a_first_bot_json_is_made_owner_only(self):
+        x.set_song_bot(self.path, "song:token", CHAT)
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), {"token": "song:token", "chat": CHAT})
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+    def test_a_chat_that_isnt_a_chat_id_or_the_cover_bots_token_writes_nothing(self):
+        with open(self.path, "w") as f:
+            json.dump({"covers": {"token": "story:token", "chat": CHAT}}, f)
+        for token, chat in (("song:token", "<your chat id>"), ("song:token", ""), ("song:token", "12 34"),
+                            ("story:token", CHAT), ("", CHAT)):
+            with self.assertRaises(SystemExit):
+                x.set_song_bot(self.path, token, chat)
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), {"covers": {"token": "story:token", "chat": CHAT}})
+
+    def test_the_command_asks_for_both(self):
+        with mock.patch.object(x.getpass, "getpass", return_value="song:token"), \
+                mock.patch("builtins.input", return_value=CHAT), mock.patch("sys.stdout", io.StringIO()):
+            x.main(["song-bot", "--config", self.path])
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), {"token": "song:token", "chat": CHAT})
 
 
 class CoverUpload(unittest.TestCase):
@@ -703,7 +824,7 @@ class AddingCovers(unittest.TestCase):
         self.assertEqual(x.covers_summary(self.dir, 299), f"Covers: none from Day 299 (today) on, in {self.dir}")
 
 
-class Deploying(unittest.TestCase):
+class DeployClone(unittest.TestCase):
     """deploy.sh in a throwaway clone of this repo, with an ssh that only notes it was called."""
 
     def setUp(self):
@@ -731,6 +852,8 @@ class Deploying(unittest.TestCase):
                       capture_output=True, text=True, timeout=60)
         return r.returncode, r.stdout + r.stderr, os.path.exists(self.calls)
 
+
+class Deploying(DeployClone):
     def test_uncommitted_changes_to_what_goes_up_are_refused(self):
         # It copied the working tree as it was: a half-done edit went live with no commit naming it.
         with open(os.path.join(self.clone, "web", "app.js"), "a") as f:
@@ -747,6 +870,100 @@ class Deploying(unittest.TestCase):
         code, said, reached = self.deploy("somehost")
         self.assertTrue(reached, said)
         self.assertIn(f"at {head}", said)
+
+
+class DeployingToAPhone(DeployClone):
+    """deploy.sh against a made-up phone: ssh runs each command here, in a home and a $PREFIX of its
+    own, with sv, curl, tailscale and pip as stand-ins. What it writes there is read back."""
+
+    FAKES = {
+        "ssh": '#!/bin/sh\nshift\nexec sh -c "$*"\n',
+        "sv": '#!/bin/sh\necho "sv $*" >> "$HOME/calls"\n',
+        "curl": "#!/bin/sh\nprintf ok\n",
+        "tailscale": '#!/bin/sh\necho "tailscale $*" >> "$HOME/calls"\n',
+        "pip": "#!/bin/sh\nexit 0\n",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.join(self.folder, "home")
+        self.prefix = os.path.join(self.folder, "usr")
+        self.service = os.path.join(self.prefix, "var", "service")
+        os.makedirs(self.home)
+        os.makedirs(self.service)
+        for name, body in self.FAKES.items():
+            path = os.path.join(self.folder, "bin", name)
+            with open(path, "w") as f:
+                f.write(body)
+            os.chmod(path, 0o755)
+        self.env.update(HOME=self.home, PREFIX=self.prefix)
+        self.guard(0)
+
+    def guard(self, exits):
+        """A stand-in for home-server's sv-guard on the phone, which notes it ran and exits [exits]."""
+        bin_ = os.path.join(self.home, ".local", "bin")
+        os.makedirs(bin_, exist_ok=True)
+        with open(os.path.join(bin_, "sv-guard"), "w") as f:
+            f.write(f'#!/bin/sh\necho "sv-guard $*" >> "$HOME/started"\nexit {exits}\n')
+        os.chmod(os.path.join(bin_, "sv-guard"), 0o755)
+
+    def run_script(self, guard_exit):
+        """The service's run script, run as runsv would, with sv-guard exiting [guard_exit] and a
+        python that only notes how it was started."""
+        self.guard(guard_exit)
+        with open(os.path.join(self.folder, "bin", "python"), "w") as f:
+            f.write('#!/bin/sh\necho "python $1" >> "$HOME/started"\n')
+        os.chmod(os.path.join(self.folder, "bin", "python"), 0o755)
+        started = os.path.join(self.home, "started")
+        if os.path.exists(started):
+            os.remove(started)
+        r = self.run_(["sh", os.path.join(self.service, "xrninsta", "run")], env=self.env, capture_output=True,
+                      text=True, timeout=30)
+        with open(started) as f:
+            return r.returncode, f.read().splitlines()
+
+    def test_a_new_service_clears_a_leftover_copy_off_its_port_before_it_starts(self):
+        # Every other service's run script calls sv-guard just before its exec line; this one
+        # didn't, so a copy left behind by a dead runsv held port 5239 and the new one crashed
+        # once a second.
+        code, said, _ = self.deploy("phone")
+        self.assertEqual(code, 0, said)
+        with open(os.path.join(self.service, "xrninsta", "run")) as f:
+            run = f.read()
+        program = f"{self.home}/xrninsta/xrninsta.py"
+        self.assertIn(f"{self.home}/.local/bin/sv-guard 5239 {program} || exit 1\nexec python {program} \\\n", run)
+        self.assertEqual(self.run_script(0), (0, [f"sv-guard 5239 {program}", f"python {program}"]))
+        self.assertEqual(self.run_script(1), (1, [f"sv-guard 5239 {program}"]))  # the port's taken: not started
+
+    def test_a_new_service_writes_its_own_log_script(self):
+        # It copied xrnwallet-sync's, so it failed on a phone without that service, and would
+        # once xrnwallet-sync is renamed xrnwal-sync.
+        code, said, _ = self.deploy("phone")
+        self.assertEqual(code, 0, said)
+        log_dir = f"{self.prefix}/var/log/sv/xrninsta"
+        with open(os.path.join(self.service, "xrninsta", "log", "run")) as f:
+            self.assertEqual(f.read(), f'#!{self.prefix}/bin/sh\nmkdir -p "{log_dir}"\nexec svlogd -tt "{log_dir}"\n')
+        self.assertEqual(os.stat(os.path.join(self.service, "xrninsta", "log", "run")).st_mode & 0o777, 0o755)
+        self.assertEqual(sorted(os.listdir(self.service)), ["xrninsta"])  # no half-built copy left
+
+    def test_a_phone_without_sv_guard_gets_no_service(self):
+        os.remove(os.path.join(self.home, ".local", "bin", "sv-guard"))
+        code, said, _ = self.deploy("phone")
+        self.assertEqual(code, 1, said)
+        self.assertIn("phone/install-sv-guard", said)
+        self.assertEqual(os.listdir(self.service), [])
+
+    def test_an_update_restarts_the_service_and_leaves_its_run_script_alone(self):
+        self.assertEqual(self.deploy("phone")[0], 0)
+        run = os.path.join(self.service, "xrninsta", "run")
+        with open(run, "a") as f:
+            f.write("# kept\n")
+        code, said, _ = self.deploy("phone")
+        self.assertEqual(code, 0, said)
+        with open(run) as f:
+            self.assertTrue(f.read().endswith("# kept\n"))
+        with open(os.path.join(self.home, "calls")) as f:
+            self.assertIn("sv restart xrninsta", f.read().splitlines())
 
 
 def write_xlsx(path, sheets):

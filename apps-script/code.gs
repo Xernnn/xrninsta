@@ -97,7 +97,7 @@ function clearChatState_(userId) {
 }
 
 function handleMessage_(chatId, message) {
-    // Only strip the bot mention Telegram appends to commands in groups (/search@instasong_bot), not "@" inside titles.
+    // Only strip the bot mention Telegram appends to commands in groups (/search@example_song_bot), not "@" inside titles.
     const text = message.text.trim().replace(/^(\/\w+)@\w+/, '$1');
     const lower = text.toLowerCase();
     const userId = String(message.from.id);

@@ -57,6 +57,12 @@ ssh "$HOST" '
         sv restart xrninsta
         exit 0
     fi
+    # Without it the new run script would fail, and be started again, every second.
+    if [ ! -x "$HOME/.local/bin/sv-guard" ]; then
+        echo "No ~/.local/bin/sv-guard here, which the run script calls first, so no service was made." >&2
+        echo "Run phone/install-sv-guard from the home-server repo, then deploy again." >&2
+        exit 1
+    fi
     # Built under a dot name, which runit ignores, so it never starts half written.
     T=$S/.xrninsta.new
     rm -rf "$T"
@@ -65,11 +71,15 @@ ssh "$HOST" '
 #!$PREFIX/bin/sh
 # xrninsta: the song bot and its page (see ~/xrninsta and the home-server README).
 # Login is ~/.config/xrn-sync/users, shared with the sync services; the bot token is bot.json.
+# sv-guard (the home-server repo) first stops a copy left running by a dead supervisor.
+$HOME/.local/bin/sv-guard 5239 $HOME/xrninsta/xrninsta.py || exit 1
 exec python $HOME/xrninsta/xrninsta.py \\
   --port 5239 --data $HOME/xrninsta/data \\
   --users $HOME/.config/xrn-sync/users --config $HOME/.config/xrninsta/bot.json 2>&1
 EOS
-    cp "$S/xrnwallet-sync/log/run" "$T/log/run"
+    # Written out, not copied from another service: a fresh phone has none, and they get renamed.
+    printf "#!%s/bin/sh\nmkdir -p \"%s/var/log/sv/xrninsta\"\nexec svlogd -tt \"%s/var/log/sv/xrninsta\"\n" \
+        "$PREFIX" "$PREFIX" "$PREFIX" > "$T/log/run"
     chmod 755 "$T/run" "$T/log/run"
     chmod 700 "$T" "$T/log"
     mv "$T" "$S/xrninsta"

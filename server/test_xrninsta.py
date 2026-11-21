@@ -296,7 +296,7 @@ class Searching(Base):
         self.assertIn("Blue Hour", self.tg.last_text())
 
     def test_the_bots_name_after_a_command_is_ignored(self):
-        self.say("/search@instasong_bot remember")
+        self.say("/search@example_song_bot remember")
         self.assertIn("Remember Me", self.tg.last_text())
 
     def test_pages_turn_while_the_search_is_kept(self):
@@ -593,7 +593,7 @@ class Covering(unittest.TestCase):
         self.assertEqual(self.photos(), ["Day 295's cover"])
         self.covers.tick(at("2026-11-18 15:00"))
         self.assertEqual(self.photos(), ["Day 295's cover"])
-        self.say("/sendnow@daily_story_bot")  # asked again, it goes again
+        self.say("/sendnow@example_story_bot")  # asked again, it goes again
         self.assertEqual(self.photos(), ["Day 295's cover"] * 2)
 
     def test_it_answers_only_its_chat_and_its_own_commands(self):

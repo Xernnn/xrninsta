@@ -592,7 +592,7 @@ class Bot:
                 self.tg.call("sendMessage", {"chat_id": chat, "text": f"❌ CRASH LOG:\n{type(err).__name__}: {err}"})
 
     def on_message(self, chat, message):
-        # Only the bot's name that Telegram appends to commands in groups (/search@instasong_bot).
+        # Only the bot's name that Telegram appends to commands in groups (/search@example_song_bot).
         text = re.sub(r"^(/\w+)@\w+", r"\1", message["text"].strip(), flags=re.ASCII)
         # The command as a whole word: "/adds Em" or "/holdx" is no /add or /hold, but a mistyped
         # command, which startswith() let through to be added or held under that name.

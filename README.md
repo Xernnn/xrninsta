@@ -284,8 +284,7 @@ in bot.json the page runs and the bot doesn't, and the page says "Bot off". Don'
 copy a real bot's token while the server's copy runs: Telegram hands each update to one poller,
 and both log `twice`.
 
-The page uses [MiSans](https://hyperos.mi.com/font) by Xiaomi, the font of every xrn app, free for
-commercial use and served with the page (`web/MiSansLatinVF.woff2`) under its terms.
+The page is set in MiSans, the font of every xrn app, served with it (`web/MiSansLatinVF.woff2`).
 
 ## Tests
 
@@ -311,7 +310,17 @@ token, in headless Chromium.
 | `server/xrninsta.py` | the bots, the store, the importer and the page's server, in one file |
 | `server/test_xrninsta.py` | its tests |
 | `server/deploy.sh` | installs or updates it on the home server |
-| `web/` | the page: `index.html`, `app.js` (the DOM), `model.js` (the arithmetic), `style.css`, the icon and the font |
+| `web/` | the page: `index.html`, `app.js` (the DOM), `model.js` (the arithmetic), `style.css`, the icon, and the font with its note (`web/README.md`) |
 | `test/page.test.mjs` | the page's tests |
 | `apps-script/code.gs`, `apps-script/coverbot.gs` | the Apps Scripts it replaced |
 | `docs/screenshots/` | the pictures above |
+
+## Licence
+
+MIT, in [LICENSE](LICENSE), except the font.
+
+## Credits
+
+MiSans by Xiaomi, used under the MiSans font licence (free for commercial use when the software
+notes that it uses MiSans). The font files are not covered by this repository's licence.
+https://hyperos.mi.com/font/en/

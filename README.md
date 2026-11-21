@@ -83,9 +83,11 @@ Escape puts a row being fixed back as it was.
 
 A change made on the page while the bot changed the same song (or another tab did) isn't lost: the
 save is refused with the song as it is now, and the form keeps what was typed. A banner under the
-title bar says when the bot isn't running or can't reach Telegram ("Bot off: no token in bot.json",
-"Bot: can't reach Telegram", "Bot: two copies running" and so on); with the bot running there is
-none. The page follows the device's light or dark setting.
+title bar says when the bot isn't running, can't reach Telegram or isn't hearing its chat ("Bot
+off: no token in bot.json", "Bot off: the chat in bot.json isn't a chat id", "Bot: can't reach
+Telegram", "Bot: ignored another chat: a message came from chat 4242, but the "chat" in bot.json
+is 100", "Bot: two copies running" and so on); with the bot running there is none. The page
+follows the device's light or dark setting.
 
 <table>
   <tr>
@@ -176,8 +178,10 @@ It runs on the home server as the runit service `xrninsta`, on port 5239, publis
   `bot: ok`, `covers bot: ok`, `covers: ok`, or `webhook` (Telegram still sends to the Apps
   Script), `twice` (another copy is polling with the same token), `nochat`, `badchat` (the chat
   in bot.json isn't a chat id, the number Telegram gives a chat, so it answers no one; said as soon
-  as it starts), `unreachable`, `refused`. With no chat set, or one that isn't a chat id, each
-  update a bot ignores is logged with the chat it came from.
+  as it starts), `otherchat` (a message came from a chat other than bot.json's, until bot.json's
+  own chat is heard from again), `unreachable`, `refused`. Every update a bot ignores is logged
+  with the chat it came from (`bot: update 812 from chat 4242 ignored: ...`), never with what it
+  said, so a wrong chat id in bot.json shows the right one in the log.
 
 `server/deploy.sh [--force] [ssh-host]` (default `homeserver`) installs or updates it. It runs the
 tests first, refuses uncommitted changes to `server/xrninsta.py` or `web/` (`--force` sends them

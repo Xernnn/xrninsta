@@ -356,6 +356,42 @@ class Guarding(Base):
         poller.once()
         self.assertEqual(poller.status["state"], "nochat")
 
+    def test_messages_from_another_chat_are_logged_and_the_status_isnt_ok_till_its_own_chat_speaks(self):
+        # A chat id that is a number, but another chat's, dropped every message as quietly as
+        # "<your chat id>" did: nothing in the log, and the status said ok.
+        poller = x.Poller(self.store, self.bot)
+        message = lambda uid, chat, text: {"update_id": uid, "message": {  # noqa: E731
+            "message_id": uid, "chat": {"id": chat}, "from": {"id": USER}, "text": text}}
+        self.tg.updates = [{"ok": True, "result": [message(5, 4242, "Song\nSomeone\nvpop")]},
+                           {"ok": True, "result": []}]
+        with mock.patch.object(x, "log") as logged:
+            poller.once()
+            poller.once()  # an empty poll since doesn't make it ok again
+        self.assertEqual(self.titles(), [])
+        self.assertEqual(poller.status["state"], "otherchat")
+        self.assertIn("chat 4242", poller.status["error"])
+        self.assertIn(f"in bot.json is {CHAT}", poller.status["error"])
+        lines = [c.args[0] for c in logged.call_args_list]
+        self.assertIn(f'bot: update 5 from chat 4242 ignored: the "chat" in bot.json is {CHAT}', lines)
+        self.assertTrue(any(line.startswith("bot: otherchat: ") for line in lines), lines)
+        self.assertNotIn("Song", " ".join(lines))  # what was sent stays out of the log
+        self.tg.updates = [{"ok": True, "result": [message(6, int(CHAT), "/start")]}]
+        with mock.patch.object(x, "log"):
+            poller.once()
+        self.assertEqual(poller.status["state"], "ok")
+
+    def test_the_cover_bot_says_so_too(self):
+        covers = x.Covers(self.store, self.tg, CHAT, os.path.join(self.folder, "covers"), x.load_zone(x.COVER_ZONE))
+        poller = x.covers_poller(self.store, covers)
+        self.tg.updates = [{"ok": True, "result": [{"update_id": 3, "message": {
+            "message_id": 3, "chat": {"id": 4242}, "from": {"id": USER}, "text": "/sendnow"}}]}]
+        with mock.patch.object(x, "log") as logged:
+            poller.once()
+        self.assertEqual(poller.status["state"], "otherchat")
+        self.assertIn('under "covers" in bot.json', poller.status["error"])
+        self.assertIn("covers bot: update 3 from chat 4242 ignored", "\n".join(c.args[0] for c in logged.call_args_list))
+        self.assertEqual(self.tg.sent("sendPhoto"), [])
+
     def test_a_chat_that_isnt_a_chat_id_is_said_at_start_and_stays_in_the_status(self):
         # 18-21 Nov 2026: bot.json's "chat" held a pasted "<your chat id>". Any chat that wasn't empty
         # counted as set, so the bot ignored every message while its log and its status said ok.

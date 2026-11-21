@@ -474,13 +474,16 @@ class Chat:
     """The one chat a bot answers, as bot.json names it ([where] in bot.json, for [name] in the log).
     Only a chat id counts: from 18 to 21 Nov 2026 the song bot's "chat" was a pasted
     "<your chat id>", which counted as set because it wasn't empty, so the bot ignored every
-    message while its log said ok. Now that answers no one and says why, at start and after."""
+    message while its log said ok. Now that answers no one and says why, at start and after. A
+    chat id that is another chat's was as quiet: now each message from another chat is logged, and
+    the status isn't ok until the bot's own chat is heard from again."""
 
     def __init__(self, chat, where, name):
         self.id = str("" if chat is None else chat).strip()
         self.where = where
         self.name = name
         self.usable = bool(CHAT_ID.fullmatch(self.id))
+        self.stranger = None  # the last other chat a message came from, since this one's last
 
     def fault(self):
         """What's wrong with the chat bot.json names, or "" if nothing is."""
@@ -496,15 +499,29 @@ class Chat:
         fault = self.fault()
         return (("nochat" if not self.id else "badchat"), f"{fault}, so it {does}") if fault else None
 
+    def state(self):
+        """(state, why) for the poller's status after a poll that worked: a fault in bot.json, or
+        another chat heard from last, or ok."""
+        if self.problem():
+            return self.problem()
+        if self.stranger:
+            return "otherchat", f'a message came from chat {self.stranger}, but the "chat" {self.where} is {self.id}'
+        return ("ok",)
+
     def is_ours(self, chat):
         return self.usable and chat == self.id
 
     def lets_in(self, chat, update):
         """Whether an update from [chat] is the bot's to answer."""
         if self.is_ours(chat):
+            self.stranger = None
             return True
         if not self.usable:
             log(f'{self.name}: update {update.get("update_id")} from chat {chat or "?"} ignored: {self.fault()}')
+        else:
+            log(f'{self.name}: update {update.get("update_id")} from chat {chat or "?"} ignored: '
+                f'the "chat" {self.where} is {self.id}')
+            self.stranger = chat or "?"
         return False
 
 
@@ -1148,12 +1165,13 @@ class Poller:
             self.note("refused", f"{code}: {said}")
             return 300 if code in (401, 404) else 30
         self.status["lastPoll"] = now_ms()
-        self.note(*(self.bot.chat.problem() or ("ok",)))
         for update in r.get("result") or []:
             uid = update.get("update_id")
             if isinstance(uid, int) and uid >= offset:
                 self.store.set_meta(self.offset_key, uid + 1)
                 self.bot.handle(update)
+        # After the updates, which may have come from another chat.
+        self.note(*self.bot.chat.state())
         return 0
 
     def run(self):

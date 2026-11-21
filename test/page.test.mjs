@@ -146,3 +146,8 @@ test("the bot's banner says what's wrong, and a chat that isn't a chat id is one
     'Bot off: the chat in bot.json isn\'t a chat id');
   assert.equal(botLabel({ state: 'refused', error: '401: Unauthorized' }), 'Bot: Telegram refused it: 401: Unauthorized');
 });
+
+test('a message from another chat is in the banner, with the chat it came from', () => {
+  const error = 'a message came from chat 4242, but the "chat" in bot.json is 100';
+  assert.equal(botLabel({ state: 'otherchat', error }), `Bot: ignored another chat: ${error}`);
+});

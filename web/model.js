@@ -84,12 +84,13 @@ const BOT_WORDS = {
   off: 'Bot off: no token in bot.json',
   nochat: 'Bot off: no chat in bot.json',
   badchat: "Bot off: the chat in bot.json isn't a chat id",
+  otherchat: 'Bot: ignored another chat',
   twice: 'Bot: two copies running',
   unreachable: "Bot: can't reach Telegram",
   refused: 'Bot: Telegram refused it',
   error: 'Bot error',
 };
-const BOT_SAYS_WHY = ['refused', 'error'];
+const BOT_SAYS_WHY = ['refused', 'error', 'otherchat'];
 
 export function botLabel(status) {
   const words = BOT_WORDS[status && status.state];

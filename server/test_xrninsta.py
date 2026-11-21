@@ -824,7 +824,7 @@ class AddingCovers(unittest.TestCase):
         self.assertEqual(x.covers_summary(self.dir, 299), f"Covers: none from Day 299 (today) on, in {self.dir}")
 
 
-class Deploying(unittest.TestCase):
+class DeployClone(unittest.TestCase):
     """deploy.sh in a throwaway clone of this repo, with an ssh that only notes it was called."""
 
     def setUp(self):
@@ -852,6 +852,8 @@ class Deploying(unittest.TestCase):
                       capture_output=True, text=True, timeout=60)
         return r.returncode, r.stdout + r.stderr, os.path.exists(self.calls)
 
+
+class Deploying(DeployClone):
     def test_uncommitted_changes_to_what_goes_up_are_refused(self):
         # It copied the working tree as it was: a half-done edit went live with no commit naming it.
         with open(os.path.join(self.clone, "web", "app.js"), "a") as f:
@@ -868,6 +870,93 @@ class Deploying(unittest.TestCase):
         code, said, reached = self.deploy("somehost")
         self.assertTrue(reached, said)
         self.assertIn(f"at {head}", said)
+
+
+class DeployingToAPhone(DeployClone):
+    """deploy.sh against a made-up phone: ssh runs each command here, in a home and a $PREFIX of its
+    own, with sv, curl, tailscale and pip as stand-ins. What it writes there is read back."""
+
+    FAKES = {
+        "ssh": '#!/bin/sh\nshift\nexec sh -c "$*"\n',
+        "sv": '#!/bin/sh\necho "sv $*" >> "$HOME/calls"\n',
+        "curl": "#!/bin/sh\nprintf ok\n",
+        "tailscale": '#!/bin/sh\necho "tailscale $*" >> "$HOME/calls"\n',
+        "pip": "#!/bin/sh\nexit 0\n",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.join(self.folder, "home")
+        self.prefix = os.path.join(self.folder, "usr")
+        self.service = os.path.join(self.prefix, "var", "service")
+        os.makedirs(self.home)
+        os.makedirs(self.service)
+        for name, body in self.FAKES.items():
+            path = os.path.join(self.folder, "bin", name)
+            with open(path, "w") as f:
+                f.write(body)
+            os.chmod(path, 0o755)
+        self.env.update(HOME=self.home, PREFIX=self.prefix)
+        self.guard(0)
+        # The service it copied its log script from.
+        os.makedirs(os.path.join(self.service, "xrnwallet-sync", "log"))
+        with open(os.path.join(self.service, "xrnwallet-sync", "log", "run"), "w") as f:
+            f.write("#!/bin/sh\nexec svlogd -tt .\n")
+
+    def guard(self, exits):
+        """A stand-in for home-server's sv-guard on the phone, which notes it ran and exits [exits]."""
+        bin_ = os.path.join(self.home, ".local", "bin")
+        os.makedirs(bin_, exist_ok=True)
+        with open(os.path.join(bin_, "sv-guard"), "w") as f:
+            f.write(f'#!/bin/sh\necho "sv-guard $*" >> "$HOME/started"\nexit {exits}\n')
+        os.chmod(os.path.join(bin_, "sv-guard"), 0o755)
+
+    def run_script(self, guard_exit):
+        """The service's run script, run as runsv would, with sv-guard exiting [guard_exit] and a
+        python that only notes how it was started."""
+        self.guard(guard_exit)
+        with open(os.path.join(self.folder, "bin", "python"), "w") as f:
+            f.write('#!/bin/sh\necho "python $1" >> "$HOME/started"\n')
+        os.chmod(os.path.join(self.folder, "bin", "python"), 0o755)
+        started = os.path.join(self.home, "started")
+        if os.path.exists(started):
+            os.remove(started)
+        r = self.run_(["sh", os.path.join(self.service, "xrninsta", "run")], env=self.env, capture_output=True,
+                      text=True, timeout=30)
+        with open(started) as f:
+            return r.returncode, f.read().splitlines()
+
+    def test_a_new_service_clears_a_leftover_copy_off_its_port_before_it_starts(self):
+        # Every other service's run script calls sv-guard just before its exec line; this one
+        # didn't, so a copy left behind by a dead runsv held port 5239 and the new one crashed
+        # once a second.
+        code, said, _ = self.deploy("phone")
+        self.assertEqual(code, 0, said)
+        with open(os.path.join(self.service, "xrninsta", "run")) as f:
+            run = f.read()
+        program = f"{self.home}/xrninsta/xrninsta.py"
+        self.assertIn(f"{self.home}/.local/bin/sv-guard 5239 {program} || exit 1\nexec python {program} \\\n", run)
+        self.assertEqual(self.run_script(0), (0, [f"sv-guard 5239 {program}", f"python {program}"]))
+        self.assertEqual(self.run_script(1), (1, [f"sv-guard 5239 {program}"]))  # the port's taken: not started
+
+    def test_a_phone_without_sv_guard_gets_no_service(self):
+        os.remove(os.path.join(self.home, ".local", "bin", "sv-guard"))
+        code, said, _ = self.deploy("phone")
+        self.assertEqual(code, 1, said)
+        self.assertIn("phone/install-sv-guard", said)
+        self.assertEqual(os.listdir(self.service), ["xrnwallet-sync"])
+
+    def test_an_update_restarts_the_service_and_leaves_its_run_script_alone(self):
+        self.assertEqual(self.deploy("phone")[0], 0)
+        run = os.path.join(self.service, "xrninsta", "run")
+        with open(run, "a") as f:
+            f.write("# kept\n")
+        code, said, _ = self.deploy("phone")
+        self.assertEqual(code, 0, said)
+        with open(run) as f:
+            self.assertTrue(f.read().endswith("# kept\n"))
+        with open(os.path.join(self.home, "calls")) as f:
+            self.assertIn("sv restart xrninsta", f.read().splitlines())
 
 
 def write_xlsx(path, sheets):

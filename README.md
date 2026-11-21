@@ -188,7 +188,10 @@ tests first, refuses uncommitted changes to `server/xrninsta.py` or `web/` (`--f
 anyway), says which branch and commit it sends, copies the program and its page together, installs
 `tzdata`, makes the service the first time and restarts it after, waits for `/health`, publishes
 `/xrninsta`, and ends with `check` for each bot. It leaves the songs, the covers and `bot.json`
-alone.
+alone. The service's run script calls `~/.local/bin/sv-guard 5239 ~/xrninsta/xrninsta.py` just
+before it starts the program, as every other service's does, so a copy left running by a dead
+supervisor is stopped instead of holding the port. The guard comes from the home-server repo
+(`phone/install-sv-guard`); without it on the phone, `deploy.sh` makes no service and says so.
 
 The commands, all on the server:
 

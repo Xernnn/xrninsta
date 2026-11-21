@@ -52,6 +52,12 @@ the script's were.
   answered as such rather than added as a song called "/serch". An error in the bot is sent to the
   chat as a crash line and the bot carries on.
 
+<img src="docs/screenshots/bot-songs.png" width="440" alt="A transcript of the song bot: /add with a new song and its reply with an Undo button; a song already in the list and the bot's warning with Add anyway and Cancel; /search paper with two results; /stats with its menu, then the Genre Leaderboard it turns into; /hold and its reply">
+
+*The song bot's real replies: `server/xrninsta.py`, unchanged, run on the laptop against a
+stand-in for Telegram's Bot API, and sent made-up messages. Shown as a plain transcript, not as
+Telegram draws it.*
+
 ## The page
 
 ![The Songs tab with one row open to be fixed: title, artists, day and genre fields, Save, Cancel and Delete](docs/screenshots/songs.png)
@@ -123,6 +129,11 @@ they're made elsewhere and copied up.
   for 60 days. Keep the zip they came from.
 - It needs time zone data, which Termux's Python lacks; `deploy.sh` installs `tzdata`. Without it
   no cover goes out, and the log and `check --covers` say why.
+
+<img src="docs/screenshots/bot-cover.png" width="440" alt="A transcript of the Daily Story Bot: /start and its greeting, then /sendnow, its please-wait line, and the day's cover with the caption Day 297's cover">
+
+*The Daily Story Bot's real replies to `/start` and `/sendnow`, recorded the same way, with a
+made-up cover.*
 
 ## How it differs from the scripts
 
@@ -293,15 +304,18 @@ cd server && python3 -m unittest test_xrninsta
 node --test test
 ```
 
-The first (84 tests) drive both bots against a fake Telegram, import a made-up sheet, add made-up
-covers, and use the page's API over HTTP; the second (11) check the page's own arithmetic
-(`web/model.js`: the Dashboard's groups and counts, the Songs tab's find and order, the double
-click, the error labels). Every song in them is made up; never add real ones, an export of the
+The first (98 tests) drive both bots against a fake Telegram, import a made-up sheet, add made-up
+covers, use the page's API over HTTP, and run `deploy.sh` against a made-up phone; the second (13)
+check the page's own arithmetic (`web/model.js`: the Dashboard's groups and counts, the Songs tab's
+find and order, the double click, the error labels and the bot's banner). Every song in them is made up; never add real ones, an export of the
 sheet, or a real cover, to this repo. `.gitignore` keeps out `*.xlsx`, `*.csv`, `*.zip` and every
 PNG but the screenshots.
 
-The screenshots come from a copy of the server run on the laptop with made-up songs and no bot
-token, in headless Chromium.
+The page's screenshots come from a copy of the server run on the laptop with made-up songs and no
+bot token, in headless Chromium. The bots' come from their real code, run on the laptop with its
+Telegram address pointed at a stand-in on 127.0.0.1 that answers `getUpdates`, `sendMessage`,
+`sendPhoto` and the rest; made-up messages went in, and the replies that came out were laid out as
+a plain transcript and screenshotted in headless Chromium. Nothing reached Telegram.
 
 ## Files
 

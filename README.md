@@ -174,8 +174,10 @@ It runs on the home server as the runit service `xrninsta`, on port 5239, publis
   `{"token": ..., "chat": ..., "covers": {"token": ..., "chat": ...}}`. Never in this repo.
 - The log: `$PREFIX/var/log/sv/xrninsta/current`. A bot says each change of state once:
   `bot: ok`, `covers bot: ok`, `covers: ok`, or `webhook` (Telegram still sends to the Apps
-  Script), `twice` (another copy is polling with the same token), `nochat`, `unreachable`,
-  `refused`. With no chat set, each update a bot ignores is logged with the chat it came from.
+  Script), `twice` (another copy is polling with the same token), `nochat`, `badchat` (the chat
+  in bot.json isn't a chat id, the number Telegram gives a chat, so it answers no one; said as soon
+  as it starts), `unreachable`, `refused`. With no chat set, or one that isn't a chat id, each
+  update a bot ignores is logged with the chat it came from.
 
 `server/deploy.sh [--force] [ssh-host]` (default `homeserver`) installs or updates it. It runs the
 tests first, refuses uncommitted changes to `server/xrninsta.py` or `web/` (`--force` sends them
@@ -187,6 +189,7 @@ alone.
 The commands, all on the server:
 
 ```sh
+python ~/xrninsta/xrninsta.py song-bot --config ~/.config/xrninsta/bot.json        # asks for the song bot's token and chat
 python ~/xrninsta/xrninsta.py check --config ~/.config/xrninsta/bot.json          # which bot, which chat, where its messages go
 python ~/xrninsta/xrninsta.py check --covers --config ~/.config/xrninsta/bot.json --data ~/xrninsta/data   # and how far the covers go
 python ~/xrninsta/xrninsta.py webhook-off [--covers] --config ~/.config/xrninsta/bot.json   # take a bot's messages from the Apps Script
@@ -201,21 +204,20 @@ Both bots have moved (November 2026). The steps are kept here for setting it up 
 
 ### The song bot
 
-1. Put the bot's token and chat id on the server. They're in the Apps Script project's settings,
-   under Script properties (`BOT_TOKEN`, `ALLOWED_CHAT_ID`):
+1. Install it: `server/deploy.sh`. The page runs, and the bot waits for its token.
+2. Give it the bot. The token and chat id are in the Apps Script project's settings, under Script
+   properties (`BOT_TOKEN`, `ALLOWED_CHAT_ID`). `song-bot` asks for both, so the token never goes
+   on a command line, refuses a chat id that isn't a number, and keeps the cover bot's part of
+   bot.json:
 
    ```sh
-   ssh -t homeserver 'mkdir -p ~/.config/xrninsta && umask 077 &&
-     read -rsp "Bot token: " t && echo && read -rp "Chat id: " c &&
-     case $c in ""|*[!0-9-]*) echo "The chat id is a number; nothing was written." >&2; exit 1;; esac &&
-     printf "{\"token\": \"%s\", \"chat\": \"%s\"}\n" "$t" "$c" > ~/.config/xrninsta/bot.json'
+   ssh -t homeserver 'python ~/xrninsta/xrninsta.py song-bot --config ~/.config/xrninsta/bot.json'
+   ssh homeserver 'SVDIR=$PREFIX/var/service sv restart xrninsta'
+   ssh homeserver 'python ~/xrninsta/xrninsta.py check --config ~/.config/xrninsta/bot.json'
    ```
 
-   The bot answers only that chat. Without one it answers no one, and its log names each chat it
-   ignored. This writes a new bot.json, so run it before `covers-bot`, or the cover bot's part goes.
-
-2. Install it: `server/deploy.sh`. It ends with `check`, which names the bot and says Telegram
-   still sends its messages to the Apps Script. Nothing has moved yet.
+   The bot answers only that chat. `check` names the bot and its chat, and says Telegram still
+   sends its messages to the Apps Script. Nothing has moved yet.
 3. Download the sheet as .xlsx (File, Download, Microsoft Excel) and import it:
 
    ```sh

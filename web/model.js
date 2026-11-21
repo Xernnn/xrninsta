@@ -77,3 +77,22 @@ export function failLabel(status) {
   if (status === 429) return 'Too many tries';
   return `Error ${status}`;
 }
+
+// What the banner under the title bar says about the bot, from /api/status, or null when it's running.
+const BOT_WORDS = {
+  webhook: 'Bot: messages still go to the Apps Script (run webhook-off)',
+  off: 'Bot off: no token in bot.json',
+  nochat: 'Bot off: no chat in bot.json',
+  badchat: "Bot off: the chat in bot.json isn't a chat id",
+  twice: 'Bot: two copies running',
+  unreachable: "Bot: can't reach Telegram",
+  refused: 'Bot: Telegram refused it',
+  error: 'Bot error',
+};
+const BOT_SAYS_WHY = ['refused', 'error'];
+
+export function botLabel(status) {
+  const words = BOT_WORDS[status && status.state];
+  if (!words) return null;
+  return BOT_SAYS_WHY.includes(status.state) && status.error ? `${words}: ${status.error}` : words;
+}

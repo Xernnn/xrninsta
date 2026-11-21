@@ -1,19 +1,10 @@
 // xrninsta's page: the sheet's Dashboard, its Songs and its OnHold, on the home server.
 // Everything a person typed goes in through textContent: the host is shared with other apps' pages.
 
-import { dashboard, failLabel, holdList, secondClick, songList } from './model.js';
+import { botLabel, dashboard, failLabel, holdList, secondClick, songList } from './model.js';
 
 const $ = (sel) => document.querySelector(sel);
 const CLIENT = { 'X-Xrn-Client': 'xrninsta' };
-const BOT_WORDS = {
-  webhook: 'Bot: messages still go to the Apps Script (run webhook-off)',
-  off: 'Bot off: no token in bot.json',
-  nochat: 'Bot off: no chat in bot.json',
-  twice: 'Bot: two copies running',
-  unreachable: "Bot: can't reach Telegram",
-  refused: 'Bot: Telegram refused it',
-  error: 'Bot error',
-};
 // A mouse and keyboard: put the cursor in a row that opens. On a phone that would pop the keyboard.
 const POINTER = matchMedia('(hover: hover) and (pointer: fine)');
 
@@ -188,9 +179,9 @@ async function load() {
 
 function showBot(status) {
   const banner = $('#bot');
-  const words = BOT_WORDS[status.state];
+  const words = botLabel(status);
   banner.hidden = !words;
-  if (words) banner.textContent = status.state === 'refused' || status.state === 'error' ? `${words}: ${status.error}` : words;
+  if (words) banner.textContent = words;
 }
 
 function render() {

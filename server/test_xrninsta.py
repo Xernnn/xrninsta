@@ -356,6 +356,40 @@ class Guarding(Base):
         poller.once()
         self.assertEqual(poller.status["state"], "nochat")
 
+    def test_a_chat_that_isnt_a_chat_id_is_said_at_start_and_stays_in_the_status(self):
+        # 18-21 Nov 2026: bot.json's "chat" held a pasted "<your chat id>". Any chat that wasn't empty
+        # counted as set, so the bot ignored every message while its log and its status said ok.
+        with mock.patch.object(x, "log") as logged:
+            poller = x.Poller(self.store, x.Bot(self.store, self.tg, "<your chat id>"))
+            started = poller.status["state"]
+            self.tg.updates = [{"ok": True, "result": [{"update_id": 9, "message": {
+                "message_id": 1, "chat": {"id": int(CHAT)}, "from": {"id": USER}, "text": "Song\nSomeone\nvpop"}}]}]
+            poller.once()
+        self.assertEqual((started, poller.status["state"]), ("badchat", "badchat"))
+        self.assertIn('"<your chat id>"', poller.status["error"])
+        self.assertEqual(self.titles(), [])
+        lines = [c.args[0] for c in logged.call_args_list]
+        self.assertTrue(lines[0].startswith("bot: badchat: "), lines)  # said once it starts, before any poll
+        self.assertIn(f"bot: update 9 from chat {CHAT} ignored", "\n".join(lines))
+
+    def test_a_chat_id_is_a_number_or_nothing(self):
+        for chat in (CHAT, "-1001234567890", " 100 ", 100, -42):
+            self.assertIsNone(x.Chat(chat, "in bot.json", "bot").problem(), chat)
+        self.assertEqual(x.Chat("", "in bot.json", "bot").problem()[0], "nochat")
+        for chat in ("<your chat id>", "12 34", "-", "1-2", "@a_channel", "100.0", "+100", "1" * 21):
+            self.assertEqual(x.Chat(chat, "in bot.json", "bot").problem()[0], "badchat", chat)
+
+    def test_check_says_when_the_chat_isnt_a_chat_id(self):
+        path = os.path.join(self.folder, "bot.json")
+        with open(path, "w") as f:
+            json.dump({"token": "song:token", "chat": "<your chat id>"}, f)
+        self.tg.answers = {"getMe": {"ok": True, "result": {"username": "example_song_bot"}},
+                           "getWebhookInfo": {"ok": True, "result": {"url": ""}}}
+        out = io.StringIO()
+        with mock.patch.object(x, "Telegram", return_value=self.tg), mock.patch("sys.stdout", out):
+            x.main(["check", "--config", path])
+        self.assertIn('answers no one: the "chat" in bot.json is "<your chat id>", which isn\'t a chat id', out.getvalue())
+
     def test_a_crash_is_reported_in_the_chat(self):
         with mock.patch.object(self.bot, "try_add", side_effect=RuntimeError("boom")):
             self.say("A\nB\nvpop")
@@ -542,6 +576,16 @@ class Covering(unittest.TestCase):
         self.assertEqual(self.tg.calls, [])
         self.assertEqual(covers.status["state"], "nochat")
 
+    def test_a_chat_that_isnt_a_chat_id_gets_no_cover_and_the_day_stays_unsent(self):
+        # Sent to "<your chat id>", Telegram's refusal settled the day: the cover was never sent.
+        covers = x.Covers(self.store, self.tg, "<your chat id>", self.dir, SYDNEY)
+        self.cover(295)
+        with mock.patch.object(x, "log"):
+            covers.tick(at("2026-11-18 15:00"))
+        self.assertEqual(self.tg.calls, [])
+        self.assertEqual(covers.status["state"], "badchat")
+        self.assertIsNone(self.store.meta("cover_day"))
+
     def test_without_time_zone_data_it_sends_nothing_and_says_why(self):
         self.cover(295)
         with mock.patch.object(x, "load_zone", return_value=None):
@@ -609,6 +653,47 @@ class CoverBotSetting(unittest.TestCase):
                 x.set_covers_bot(self.path, token, chat)
         with open(self.path) as f:
             self.assertNotIn("covers", json.load(f))
+
+
+class SongBotSetting(unittest.TestCase):
+    """`song-bot`, the song bot's setup: it asks for the token and the chat, as covers-bot does."""
+
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="xrninsta-songbot-")
+        self.addCleanup(shutil.rmtree, self.folder)
+        self.path = os.path.join(self.folder, "bot.json")
+
+    def test_it_writes_the_song_bot_and_keeps_the_cover_bot(self):
+        with open(self.path, "w") as f:
+            json.dump({"token": "old:token", "chat": "1", "covers": {"token": "story:token", "chat": CHAT}}, f)
+        x.set_song_bot(self.path, " song:token ", f" {CHAT}\n")
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), {"token": "song:token", "chat": CHAT,
+                                            "covers": {"token": "story:token", "chat": CHAT}})
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+    def test_a_first_bot_json_is_made_owner_only(self):
+        x.set_song_bot(self.path, "song:token", CHAT)
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), {"token": "song:token", "chat": CHAT})
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+    def test_a_chat_that_isnt_a_chat_id_or_the_cover_bots_token_writes_nothing(self):
+        with open(self.path, "w") as f:
+            json.dump({"covers": {"token": "story:token", "chat": CHAT}}, f)
+        for token, chat in (("song:token", "<your chat id>"), ("song:token", ""), ("song:token", "12 34"),
+                            ("story:token", CHAT), ("", CHAT)):
+            with self.assertRaises(SystemExit):
+                x.set_song_bot(self.path, token, chat)
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), {"covers": {"token": "story:token", "chat": CHAT}})
+
+    def test_the_command_asks_for_both(self):
+        with mock.patch.object(x.getpass, "getpass", return_value="song:token"), \
+                mock.patch("builtins.input", return_value=CHAT), mock.patch("sys.stdout", io.StringIO()):
+            x.main(["song-bot", "--config", self.path])
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), {"token": "song:token", "chat": CHAT})
 
 
 class CoverUpload(unittest.TestCase):

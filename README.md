@@ -250,6 +250,8 @@ Both bots have moved (November 2026). The steps are kept here for setting it up 
    included, within a minute. It also sets the bot's command list.
 5. In the Apps Script editor, delete the trigger that refreshes the Dashboard every 10 minutes, and
    don't run `setupBot` or `forceSetWebhook` again: either would point Telegram back at the script.
+6. Retire the script's web app: in the editor, Deploy, Manage deployments, pick each active
+   deployment, Archive. Its address then answers nothing, so the URL in `code.gs` is dead.
 
 Add songs only through the bot between steps 3 and 4 if you're willing to import again; the import
 won't run over songs that are already there without `--replace`.
@@ -281,6 +283,8 @@ won't run over songs that are already there without `--replace`.
    `check --covers` (add `--data ~/xrninsta/data` for the covers) shows where its messages go.
 5. In the cover script's Triggers, delete the daily trigger for `sendDailyStory` before the next
    2am, or both send that night's cover. Don't run `forceSetWebhook` again.
+6. Archive its web app the same way (Deploy, Manage deployments, Archive), so the URL in
+   `coverbot.gs` is dead too.
 
 ## Running it on the laptop
 

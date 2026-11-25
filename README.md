@@ -178,7 +178,8 @@ The API, for completeness (all JSON):
 ## On the server
 
 It runs on the home server as the runit service `xrninsta`, on port 5239, published at
-`/xrninsta` through Tailscale Funnel. Its files:
+`/xrninsta` through Tailscale Funnel. Version 1.0.0: `VERSION` in `server/xrninsta.py`, which
+`xrninsta.py --version` prints and every answer's `Server` header carries. Its files:
 
 - `~/xrninsta/xrninsta.py` and `~/xrninsta/web/`: what `deploy.sh` copies up.
 - `~/xrninsta/data/xrninsta.sqlite`: the songs, the holds, and each bot's place and state.
@@ -308,7 +309,7 @@ cd server && python3 -m unittest test_xrninsta
 node --test test
 ```
 
-The first (98 tests) drive both bots against a fake Telegram, import a made-up sheet, add made-up
+The first (102 tests) drive both bots against a fake Telegram, import a made-up sheet, add made-up
 covers, use the page's API over HTTP, and run `deploy.sh` against a made-up phone; the second (13)
 check the page's own arithmetic (`web/model.js`: the Dashboard's groups and counts, the Songs tab's
 find and order, the double click, the error labels and the bot's banner). Every song in them is made up; never add real ones, an export of the

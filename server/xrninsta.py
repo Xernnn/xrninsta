@@ -26,6 +26,7 @@ also write to and refuse.
 
     python3 xrninsta.py --data ~/xrninsta/data --users ~/.config/xrn-sync/users \\
         --config ~/.config/xrninsta/bot.json [--port 5239]
+    python3 xrninsta.py --version
     python3 xrninsta.py song-bot --config ~/.config/xrninsta/bot.json
     python3 xrninsta.py import <export.xlsx> --data ~/xrninsta/data [--replace]
     python3 xrninsta.py check --config ~/.config/xrninsta/bot.json
@@ -68,6 +69,10 @@ import urllib.request
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree
+
+# The program's version: the README says it, `--version` prints it, and every answer's Server header
+# carries it. /health stays "ok", which deploy.sh and the hub's monitor wait for.
+VERSION = "1.0.0"
 
 # ---- what the bot knows (as in code.gs) --------------------------------------------------------
 
@@ -1859,7 +1864,7 @@ def clean_hold(doc):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "xrninsta/1"
+    server_version = f"xrninsta/{VERSION}"
     sys_version = ""
     protocol_version = "HTTP/1.1"
     timeout = 60
@@ -2306,6 +2311,7 @@ def main(argv=None):
             print(covers_summary(folder, cover_day(datetime.datetime.now(zone).date())))
         return
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--version", action="version", version=f"xrninsta {VERSION}")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5239)
     p.add_argument("--data", required=True, help="where xrninsta.sqlite lives")

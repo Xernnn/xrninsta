@@ -1035,6 +1035,24 @@ class Importing(Base):
         self.assertEqual(len(self.store.songs()), 3)
 
 
+class Version(unittest.TestCase):
+    """xrninsta had no version until 1.0.0: one constant, said by the README and `--version`."""
+
+    def test_it_is_dotted_numbers(self):
+        self.assertRegex(x.VERSION, r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
+    def test_the_readme_says_the_same(self):
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "README.md"), encoding="utf-8") as f:
+            self.assertIn(f"Version {x.VERSION}:", f.read())
+
+    def test_version_prints_it(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out), self.assertRaises(SystemExit) as stop:
+            x.main(["--version"])
+        self.assertEqual(stop.exception.code, 0)
+        self.assertEqual(out.getvalue().strip(), f"xrninsta {x.VERSION}")
+
+
 class Page(unittest.TestCase):
     """The page's API, through the real server."""
 
@@ -1090,6 +1108,14 @@ class Page(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(doc["genres"], x.GENRES)
         self.assertEqual(self.call("GET", "/health", user=None), (200, "ok"))
+
+    def test_every_answer_names_the_version(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
+        c.request("GET", "/health")
+        r = c.getresponse()
+        self.assertEqual(r.read(), b"ok")  # deploy.sh and the hub's monitor wait for exactly this
+        c.close()
+        self.assertEqual(r.getheader("Server").strip(), f"xrninsta/{x.VERSION}")
 
     def test_add_edit_and_delete_a_song(self):
         self.store.add_song("Existing", "VSTRA", "VPOP", 7)

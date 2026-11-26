@@ -1293,6 +1293,17 @@ class Page(unittest.TestCase):
             with mock.patch.object(login, "check_basic", slow), concurrent.futures.ThreadPoolExecutor(2) as pool:
                 self.assertEqual([200, 200], list(pool.map(sign_in, range(2))))
 
+    def test_an_ipv6_guesser_is_its_64_not_each_address_in_it(self):
+        # Each IPv6 address had a count of its own, so the owner of a /64 (every line comes with at
+        # least one) had a new address for every guess and never reached the limit.
+        login = x.Handler.app["login"]
+        for i in range(x.FAIL_LIMIT):
+            self.assertEqual(401, self.guess_as("owner", f"guess{i}", f"2001:db8:1:2::{i + 1:x}"))
+        self.assertEqual(429, self.guess_as("owner", "guess10", "2001:db8:1:2:aaaa::1"))
+        self.assertEqual(401, self.guess_as("owner", "nope", "2001:db8:1:3::1"))  # the /64 next door isn't held
+        self.assertEqual(401, self.guess_as("owner", "nope", "::ffff:203.0.113.40"))  # an IPv4 caller written as IPv6
+        self.assertIn("203.0.113.40", login.failures)  # ...is counted as that IPv4 address
+
     def test_addresses_whose_mistakes_are_old_are_forgotten(self):
         # Each address that ever got a password wrong stayed in memory for good.
         login = x.Handler.app["login"]

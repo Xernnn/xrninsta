@@ -587,6 +587,71 @@ class Covering(unittest.TestCase):
         said = [p["text"] for p in self.tg.sent("sendMessage")]
         self.assertEqual(said, ["❌ Lỗi khi gửi ảnh: Bad Request: &lt;IMAGE_PROCESS_FAILED&gt;"])
 
+    def test_try_later_from_telegram_is_tried_again_not_taken_as_sent(self):
+        # A 429 or a 502 at 2am was said in the chat and settled the day, as a refusal does, so
+        # that day's cover never went. Both came on one night.
+        self.cover(295)
+        self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 429, "description": "Too Many Requests: retry after 5",
+                                        "parameters": {"retry_after": 5}}
+        with mock.patch.object(x, "log"):
+            self.assertEqual(self.covers.tick(at("2026-11-18 15:00")), 300)
+            self.assertIsNone(self.store.meta("cover_day"))
+            self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 502, "description": "Bad Gateway"}
+            self.assertEqual(self.covers.tick(at("2026-11-18 15:05")), 600)  # each try waits longer
+            self.assertIsNone(self.store.meta("cover_day"))
+        del self.tg.answers["sendPhoto"]
+        self.assertEqual(self.covers.tick(at("2026-11-18 15:15")), 60)
+        self.assertEqual(self.photos(), ["Day 295's cover"] * 3)
+        self.assertEqual(self.store.meta("cover_day"), "295")
+        self.assertEqual(self.tg.sent("sendMessage"), [])  # the chat hears nothing of the tries
+
+    def test_the_wait_between_tries_grows_to_half_an_hour_or_what_telegram_asks(self):
+        self.cover(295)
+        self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 500, "description": "Internal Server Error"}
+        with mock.patch.object(x, "log"):
+            waits = [self.covers.tick(at(f"2026-11-18 {15 + i}:00")) for i in range(5)]
+            self.assertEqual(waits, [300, 600, 1200, 1800, 1800])
+            self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 429, "description": "Too Many Requests: retry after 7200",
+                                            "parameters": {"retry_after": 7200}}
+            self.assertEqual(self.covers.tick(at("2026-11-18 21:00")), 7200)
+            # The next day starts again from five minutes.
+            self.cover(296)
+            self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 503, "description": "Service Unavailable"}
+            self.assertEqual(self.covers.tick(at("2026-11-19 15:00")), 300)
+
+    def test_the_last_month_of_covers_is_warned_of_each_day(self):
+        # The covers end at Day 600 (20 Sep 2027), and nothing said so before the night one was
+        # missing. From 30 days before the last, each day's send says how far they go.
+        for day in (569, 570, 571, 600):
+            self.cover(day)
+        with mock.patch.object(x, "log") as logged:
+            self.covers.tick(at("2027-08-19 16:00"))  # 2am on 20 Aug: Day 569, 31 days before
+            self.assertEqual(self.covers.status["state"], "ok")
+            self.assertEqual(self.covers.status["left"], 31)
+            self.covers.tick(at("2027-08-20 16:00"))  # Day 570
+            self.assertEqual(self.covers.status["state"], "low")
+            self.assertEqual(self.covers.status["left"], 30)
+            self.covers.tick(at("2027-08-21 16:00"))  # Day 571
+        self.assertEqual([c.args[0] for c in logged.call_args_list], [
+            "covers: ok",
+            "covers: low: the covers end at Day 600 (20 Sep 2027), 30 days on",
+            "covers: low: the covers end at Day 600 (20 Sep 2027), 29 days on",
+        ])
+        self.assertEqual(self.photos(), ["Day 569's cover", "Day 570's cover", "Day 571's cover"])
+        self.assertEqual(self.tg.sent("sendMessage"), [])  # a line in the log for the hub, nothing in the chat
+
+    def test_sendnow_says_a_try_later_and_2am_still_sends_the_day(self):
+        self.cover(295)
+        self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 502, "description": "Bad Gateway"}
+        with mock.patch.object(x, "log"):
+            self.say("/sendnow")
+        self.assertEqual(self.tg.last_text(), "❌ Lỗi khi gửi ảnh: Bad Gateway")
+        self.assertIsNone(self.store.meta("cover_day"))
+        del self.tg.answers["sendPhoto"]
+        self.covers.tick(at("2026-11-18 15:00"))
+        self.assertEqual(self.photos(), ["Day 295's cover"] * 2)
+        self.assertEqual(self.store.meta("cover_day"), "295")
+
     def test_sendnow_sends_at_once_and_2am_then_leaves_the_day_alone(self):
         self.cover(295)
         self.say("/sendnow")  # 1am on the 19th: the day is already Day 295's
@@ -1109,6 +1174,22 @@ class Page(unittest.TestCase):
         self.assertEqual(doc["genres"], x.GENRES)
         self.assertEqual(self.call("GET", "/health", user=None), (200, "ok"))
 
+    def test_a_kept_connection_answers_without_waiting_for_an_ack(self):
+        # Headers and body go out as two writes. On a kept connection, Nagle's algorithm held the
+        # second back until the caller's delayed ACK, about 40 ms later: every request after the
+        # first. The fastest of a few shows it whatever else the machine is doing.
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
+        self.addCleanup(c.close)
+        took = []
+        for _ in range(6):
+            start = time.perf_counter()
+            c.request("GET", "/api/data", headers={"Authorization": "Basic " + base64.b64encode(b"owner:pw").decode()})
+            r = c.getresponse()
+            r.read()
+            took.append(time.perf_counter() - start)
+            self.assertEqual(r.status, 200)
+        self.assertLess(min(took[1:]), 0.02, took)
+
     def test_every_answer_names_the_version(self):
         c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
         c.request("GET", "/health")
@@ -1292,6 +1373,17 @@ class Page(unittest.TestCase):
 
             with mock.patch.object(login, "check_basic", slow), concurrent.futures.ThreadPoolExecutor(2) as pool:
                 self.assertEqual([200, 200], list(pool.map(sign_in, range(2))))
+
+    def test_an_ipv6_guesser_is_its_64_not_each_address_in_it(self):
+        # Each IPv6 address had a count of its own, so the owner of a /64 (every line comes with at
+        # least one) had a new address for every guess and never reached the limit.
+        login = x.Handler.app["login"]
+        for i in range(x.FAIL_LIMIT):
+            self.assertEqual(401, self.guess_as("owner", f"guess{i}", f"2001:db8:1:2::{i + 1:x}"))
+        self.assertEqual(429, self.guess_as("owner", "guess10", "2001:db8:1:2:aaaa::1"))
+        self.assertEqual(401, self.guess_as("owner", "nope", "2001:db8:1:3::1"))  # the /64 next door isn't held
+        self.assertEqual(401, self.guess_as("owner", "nope", "::ffff:203.0.113.40"))  # an IPv4 caller written as IPv6
+        self.assertIn("203.0.113.40", login.failures)  # ...is counted as that IPv4 address
 
     def test_addresses_whose_mistakes_are_old_are_forgotten(self):
         # Each address that ever got a password wrong stayed in memory for good.

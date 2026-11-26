@@ -124,6 +124,11 @@ they're made elsewhere and copied up.
   2am sends that day's cover once it's back (never an older one). The night the clocks go forward
   it sends at 3am; the night they go back, once.
 - A missing cover is said once in the chat, with its name.
+- From 30 days before the last cover on the server, each day's send logs
+  `covers: low: the covers end at Day 600 (20 Sep 2027), 30 days on`, which xrnhub's log page
+  shows as a warning.
+- When Telegram can't be reached or says to try later (a 429 or a 5xx), the cover is sent again
+  after 5 minutes, then 10, 20 and every 30 (longer if Telegram asks), until it goes.
 - Covers stay on the server once sent. The script moved the last five to the bin.
 - The covers are left out of the server's backups. A year of them is 38 MB, and backups are kept
   for 60 days. Keep the zip they came from.
@@ -173,7 +178,7 @@ The API, for completeness (all JSON):
 | `GET /health` | `ok`, no login (for monitoring) |
 | `POST /session`, `DELETE /session` | sign in with Basic auth and get the cookie; sign out |
 | `GET /api/data` | every song and OnHold entry, the genres, their colours and the next day |
-| `GET /api/status` | whether each bot is reaching Telegram, and the last cover sent |
+| `GET /api/status` | whether each bot is reaching Telegram, the last cover sent, and how many days of covers are left after it |
 | `POST /api/songs` | `{title, artists, genre, day?, fromHold?}`; the day defaults to the next |
 | `PUT`, `DELETE /api/songs/<id>` | with `If-Match: "<updated>"` |
 | `POST /api/holds` | `{title, artists?, note?}` |

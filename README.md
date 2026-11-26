@@ -156,6 +156,10 @@ made-up cover.*
   `X-Xrn-Client` header. The page signs in once and keeps the cookie for 30 days.
 - Signing out ends that cookie on every server that takes it (xrnhub, xrnloops-sync and
   xrnrule-sync too), through `signed-out.json` beside the users file.
+- A device can sign in with a device token of its own instead (`Authorization: Bearer
+  xrndev_…`): one login per device, for the services it uses, kept as a SHA-256 in
+  `device-tokens.json` beside the users file and revoked on its own. Only the owner's let in, and
+  none can be traded for the cookie. A wrong one counts as a wrong password.
 - Ten wrong passwords from one address within 15 minutes lock that address out (429) for the rest
   of the window, and a right one clears only its own name's mistakes.
 - Writes from another site's page are refused. Bodies over 64 KB, text past the field limits

@@ -2036,6 +2036,9 @@ class Handler(BaseHTTPRequestHandler):
     server_version = f"xrninsta/{VERSION}"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    # Headers and body go out as two writes. On a kept connection, Nagle's algorithm held the
+    # second back until the caller's delayed ACK, 40 ms later: every request after the first.
+    disable_nagle_algorithm = True
     timeout = 60
     app = None  # set by serve(): {"store", "login", "poller", "web"}
     served = 0  # requests answered on this connection

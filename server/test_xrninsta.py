@@ -1153,6 +1153,22 @@ class Page(unittest.TestCase):
         self.assertEqual(doc["genres"], x.GENRES)
         self.assertEqual(self.call("GET", "/health", user=None), (200, "ok"))
 
+    def test_a_kept_connection_answers_without_waiting_for_an_ack(self):
+        # Headers and body go out as two writes. On a kept connection, Nagle's algorithm held the
+        # second back until the caller's delayed ACK, about 40 ms later: every request after the
+        # first. The fastest of a few shows it whatever else the machine is doing.
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
+        self.addCleanup(c.close)
+        took = []
+        for _ in range(6):
+            start = time.perf_counter()
+            c.request("GET", "/api/data", headers={"Authorization": "Basic " + base64.b64encode(b"owner:pw").decode()})
+            r = c.getresponse()
+            r.read()
+            took.append(time.perf_counter() - start)
+            self.assertEqual(r.status, 200)
+        self.assertLess(min(took[1:]), 0.02, took)
+
     def test_every_answer_names_the_version(self):
         c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
         c.request("GET", "/health")

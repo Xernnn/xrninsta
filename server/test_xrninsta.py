@@ -587,6 +587,50 @@ class Covering(unittest.TestCase):
         said = [p["text"] for p in self.tg.sent("sendMessage")]
         self.assertEqual(said, ["❌ Lỗi khi gửi ảnh: Bad Request: &lt;IMAGE_PROCESS_FAILED&gt;"])
 
+    def test_try_later_from_telegram_is_tried_again_not_taken_as_sent(self):
+        # A 429 or a 502 at 2am was said in the chat and settled the day, as a refusal does, so
+        # that day's cover never went. Both came on one night.
+        self.cover(295)
+        self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 429, "description": "Too Many Requests: retry after 5",
+                                        "parameters": {"retry_after": 5}}
+        with mock.patch.object(x, "log"):
+            self.assertEqual(self.covers.tick(at("2026-11-18 15:00")), 300)
+            self.assertIsNone(self.store.meta("cover_day"))
+            self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 502, "description": "Bad Gateway"}
+            self.assertEqual(self.covers.tick(at("2026-11-18 15:05")), 600)  # each try waits longer
+            self.assertIsNone(self.store.meta("cover_day"))
+        del self.tg.answers["sendPhoto"]
+        self.assertEqual(self.covers.tick(at("2026-11-18 15:15")), 60)
+        self.assertEqual(self.photos(), ["Day 295's cover"] * 3)
+        self.assertEqual(self.store.meta("cover_day"), "295")
+        self.assertEqual(self.tg.sent("sendMessage"), [])  # the chat hears nothing of the tries
+
+    def test_the_wait_between_tries_grows_to_half_an_hour_or_what_telegram_asks(self):
+        self.cover(295)
+        self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 500, "description": "Internal Server Error"}
+        with mock.patch.object(x, "log"):
+            waits = [self.covers.tick(at(f"2026-11-18 {15 + i}:00")) for i in range(5)]
+            self.assertEqual(waits, [300, 600, 1200, 1800, 1800])
+            self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 429, "description": "Too Many Requests: retry after 7200",
+                                            "parameters": {"retry_after": 7200}}
+            self.assertEqual(self.covers.tick(at("2026-11-18 21:00")), 7200)
+            # The next day starts again from five minutes.
+            self.cover(296)
+            self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 503, "description": "Service Unavailable"}
+            self.assertEqual(self.covers.tick(at("2026-11-19 15:00")), 300)
+
+    def test_sendnow_says_a_try_later_and_2am_still_sends_the_day(self):
+        self.cover(295)
+        self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 502, "description": "Bad Gateway"}
+        with mock.patch.object(x, "log"):
+            self.say("/sendnow")
+        self.assertEqual(self.tg.last_text(), "❌ Lỗi khi gửi ảnh: Bad Gateway")
+        self.assertIsNone(self.store.meta("cover_day"))
+        del self.tg.answers["sendPhoto"]
+        self.covers.tick(at("2026-11-18 15:00"))
+        self.assertEqual(self.photos(), ["Day 295's cover"] * 2)
+        self.assertEqual(self.store.meta("cover_day"), "295")
+
     def test_sendnow_sends_at_once_and_2am_then_leaves_the_day_alone(self):
         self.cover(295)
         self.say("/sendnow")  # 1am on the 19th: the day is already Day 295's

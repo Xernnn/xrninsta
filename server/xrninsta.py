@@ -109,6 +109,7 @@ COVER_AT = (2, 0)  # 2am there, daylight saving or not, when the script's trigge
 COVER_EPOCH, COVER_EPOCH_DAY = datetime.date(2026, 10, 18), 263  # the script's START_DATE_STRING and START_DAY_NUMBER
 COVER_NAME = re.compile(r"Day_([0-9]{1,6})\.png")
 COVER_MAX_BYTES = 10 * 1024 * 1024  # the most Telegram takes for a photo
+COVER_RETRY_S, COVER_RETRY_MAX_S = 300, 1800  # after a cover didn't go: 5 min, doubling to half an hour
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 COVER_COMMANDS = [
     {"command": "sendnow", "description": "Gửi ảnh của hôm nay ngay"},
@@ -1231,6 +1232,8 @@ class Covers:
         self.zone = zone or load_zone(COVER_ZONE)
         self.lock = threading.Lock()  # the 2am send and /sendnow, never both at once
         self.status = {"state": "starting", "since": now_ms(), "sent": int_or(store.meta("cover_day"), 0), "error": ""}
+        self.retry_after = 0  # seconds Telegram asked for before the next try (a 429's retry_after)
+        self.failed = (None, 0)  # (day, tries) of the cover that hasn't gone yet
 
     def note(self, state, error=""):
         if self.status["state"] != state or self.status["error"] != error:
@@ -1243,10 +1246,13 @@ class Covers:
     def send(self, text):
         self.tg.call("sendMessage", {"chat_id": self.chat.id, "text": text, "parse_mode": "HTML"})
 
-    def send_cover(self, day):
+    def send_cover(self, day, asked=False):
         """Day <day>'s cover to the chat. True once it's settled: sent, or no such cover or a
-        refusal, both said in the chat as the script did. False when Telegram couldn't be reached,
-        so the next try sends it."""
+        refusal, both said in the chat as the script did. False when Telegram couldn't be reached
+        or said to try later (a 429, or a 5xx: both came at 2am on 26 Nov 2026, and each settled
+        the day as a refusal, so its cover never went), so the next try sends it. The chat hears of
+        a try-later only when it [asked] (/sendnow)."""
+        self.retry_after = 0
         name = cover_file(day)
         try:
             with open(os.path.join(self.folder, name), "rb") as f:
@@ -1262,16 +1268,23 @@ class Covers:
             self.note("unreachable", "Telegram didn't answer")
             return False
         if not r.get("ok"):
-            self.send(f"❌ Lỗi khi gửi ảnh: {esc(r.get('description', ''))}")
-            self.note("refused", f"{r.get('error_code')}: {r.get('description', '')}")
+            code, said = r.get("error_code"), r.get("description", "")
+            later = code == 429 or (isinstance(code, int) and code >= 500)
+            if asked or not later:
+                self.send(f"❌ Lỗi khi gửi ảnh: {esc(said)}")
+            self.note("refused", f"{code}: {said}")
+            if later:
+                self.retry_after = max(0, int_or((r.get("parameters") or {}).get("retry_after"), 0))
+                return False
             return True
         self.note("ok")
         return True
 
-    def settle(self, day):
-        """Sends Day <day>'s cover and notes it as done; False if Telegram wasn't reached."""
+    def settle(self, day, asked=False):
+        """Sends Day <day>'s cover and notes it as done; False if it didn't go and is to be tried
+        again."""
         with self.lock:
-            if not self.send_cover(day):
+            if not self.send_cover(day, asked):
                 return False
             self.store.set_meta("cover_day", day)
             self.status["sent"] = day
@@ -1305,7 +1318,12 @@ class Covers:
         day = cover_day(now.date())
         if (now.hour, now.minute) < COVER_AT or int_or(self.store.meta("cover_day"), 0) >= day:
             return 60
-        return 60 if self.settle(day) else 300
+        if self.settle(day):
+            self.failed = (None, 0)
+            return 60
+        tries = self.failed[1] + 1 if self.failed[0] == day else 1
+        self.failed = (day, tries)
+        return max(self.retry_after, min(COVER_RETRY_S << (tries - 1), COVER_RETRY_MAX_S))
 
     def run(self):
         while True:
@@ -1334,7 +1352,7 @@ class Covers:
                     self.send(f"⚠️ Server chưa có dữ liệu múi giờ {COVER_ZONE} (pip install tzdata).")
                     return
                 self.send("⏳ Đang lấy ảnh, đợi chút nhé...")
-                self.settle(cover_day(self.now().date()))
+                self.settle(cover_day(self.now().date()), asked=True)
         except Exception as err:  # noqa: BLE001 - as the song bot does: say so in the chat, keep going
             log(f"covers: update {update.get('update_id')}: {type(err).__name__}: {err}")
             self.tg.call("sendMessage", {"chat_id": chat, "text": f"❌ CRASH LOG:\n{type(err).__name__}: {err}"})

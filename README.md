@@ -124,6 +124,8 @@ they're made elsewhere and copied up.
   2am sends that day's cover once it's back (never an older one). The night the clocks go forward
   it sends at 3am; the night they go back, once.
 - A missing cover is said once in the chat, with its name.
+- When Telegram can't be reached or says to try later (a 429 or a 5xx), the cover is sent again
+  after 5 minutes, then 10, 20 and every 30 (longer if Telegram asks), until it goes.
 - Covers stay on the server once sent. The script moved the last five to the bin.
 - The covers are left out of the server's backups. A year of them is 38 MB, and backups are kept
   for 60 days. Keep the zip they came from.

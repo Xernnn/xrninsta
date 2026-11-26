@@ -619,6 +619,27 @@ class Covering(unittest.TestCase):
             self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 503, "description": "Service Unavailable"}
             self.assertEqual(self.covers.tick(at("2026-11-19 15:00")), 300)
 
+    def test_the_last_month_of_covers_is_warned_of_each_day(self):
+        # The covers end at Day 600 (20 Sep 2027), and nothing said so before the night one was
+        # missing. From 30 days before the last, each day's send says how far they go.
+        for day in (569, 570, 571, 600):
+            self.cover(day)
+        with mock.patch.object(x, "log") as logged:
+            self.covers.tick(at("2027-08-19 16:00"))  # 2am on 20 Aug: Day 569, 31 days before
+            self.assertEqual(self.covers.status["state"], "ok")
+            self.assertEqual(self.covers.status["left"], 31)
+            self.covers.tick(at("2027-08-20 16:00"))  # Day 570
+            self.assertEqual(self.covers.status["state"], "low")
+            self.assertEqual(self.covers.status["left"], 30)
+            self.covers.tick(at("2027-08-21 16:00"))  # Day 571
+        self.assertEqual([c.args[0] for c in logged.call_args_list], [
+            "covers: ok",
+            "covers: low: the covers end at Day 600 (20 Sep 2027), 30 days on",
+            "covers: low: the covers end at Day 600 (20 Sep 2027), 29 days on",
+        ])
+        self.assertEqual(self.photos(), ["Day 569's cover", "Day 570's cover", "Day 571's cover"])
+        self.assertEqual(self.tg.sent("sendMessage"), [])  # a line in the log for the hub, nothing in the chat
+
     def test_sendnow_says_a_try_later_and_2am_still_sends_the_day(self):
         self.cover(295)
         self.tg.answers["sendPhoto"] = {"ok": False, "error_code": 502, "description": "Bad Gateway"}

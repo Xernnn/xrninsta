@@ -110,6 +110,7 @@ COVER_EPOCH, COVER_EPOCH_DAY = datetime.date(2026, 10, 18), 263  # the script's 
 COVER_NAME = re.compile(r"Day_([0-9]{1,6})\.png")
 COVER_MAX_BYTES = 10 * 1024 * 1024  # the most Telegram takes for a photo
 COVER_RETRY_S, COVER_RETRY_MAX_S = 300, 1800  # after a cover didn't go: 5 min, doubling to half an hour
+COVER_WARN_DAYS = 30  # from this many days before the last cover, each day's send says so
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 COVER_COMMANDS = [
     {"command": "sendnow", "description": "Gửi ảnh của hôm nay ngay"},
@@ -1231,7 +1232,8 @@ class Covers:
         self.folder = folder
         self.zone = zone or load_zone(COVER_ZONE)
         self.lock = threading.Lock()  # the 2am send and /sendnow, never both at once
-        self.status = {"state": "starting", "since": now_ms(), "sent": int_or(store.meta("cover_day"), 0), "error": ""}
+        self.status = {"state": "starting", "since": now_ms(), "sent": int_or(store.meta("cover_day"), 0), "error": "",
+                       "left": None}  # days of covers after the last one sent
         self.retry_after = 0  # seconds Telegram asked for before the next try (a 429's retry_after)
         self.failed = (None, 0)  # (day, tries) of the cover that hasn't gone yet
 
@@ -1277,8 +1279,19 @@ class Covers:
                 self.retry_after = max(0, int_or((r.get("parameters") or {}).get("retry_after"), 0))
                 return False
             return True
-        self.note("ok")
+        self.note(*self.runway(day))
         return True
+
+    def runway(self, day):
+        """("ok",), or ("low", why) when the covers end within COVER_WARN_DAYS of Day <day>: the
+        last one is Day 600 (20 Sep 2027), and nothing said so before the night one was missing.
+        The log line is new each day, as the count goes down, and xrnhub's log page shows it."""
+        last = max([d for d in cover_days(self.folder) if d >= day], default=day)
+        self.status["left"] = last - day
+        if last - day > COVER_WARN_DAYS:
+            return ("ok",)
+        ends = COVER_EPOCH + datetime.timedelta(days=last - COVER_EPOCH_DAY)
+        return ("low", f"the covers end at Day {last} ({ends.day} {ends:%b %Y}), {last - day} days on")
 
     def settle(self, day, asked=False):
         """Sends Day <day>'s cover and notes it as done; False if it didn't go and is to be tried

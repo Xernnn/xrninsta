@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # One job on purpose, to keep runner minutes down.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The page's model (web/model.js) is an ES module with no package.json beside it, which
+      # Node loads as one only since 22.12.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Page tests
+        run: node --test test/*.test.mjs
+
+      # The server steps run even when the page tests fail, since they don't depend on them.
+      # On the oldest and newest Python the server may run on.
+      - uses: actions/setup-python@v7
+        id: py312
+        if: ${{ !cancelled() }}
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-python@v7
+        id: py314
+        if: ${{ !cancelled() }}
+        with:
+          python-version: "3.14"
+
+      # deploy.sh's tests clone the repo and run its checks with the python3 on PATH, against a
+      # stand-in ssh: nothing leaves the runner.
+      - name: Server and deploy tests, Python 3.12
+        if: ${{ !cancelled() }}
+        working-directory: server
+        run: |
+          py="${{ steps.py312.outputs.python-path }}"
+          "$py" --version
+          "$py" -m pip install --quiet bcrypt
+          "$py" -m unittest test_xrninsta
+
+      - name: Server and deploy tests, Python 3.14
+        if: ${{ !cancelled() }}
+        working-directory: server
+        run: |
+          py="${{ steps.py314.outputs.python-path }}"
+          "$py" --version
+          "$py" -m pip install --quiet bcrypt
+          "$py" -m unittest test_xrninsta
